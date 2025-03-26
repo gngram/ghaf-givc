@@ -577,6 +577,21 @@ impl pb::admin_service_server::AdminService for AdminService {
         Err(Status::unimplemented("Not supported"))
     }
 
+    async fn issue_token(
+        &self,
+        request: tonic::Request<TokenRequest>,
+    ) -> std::result::Result<tonic::Response<TokenResponse>, tonic::Status> {
+        escalate(request, |req| async move {
+            let vm_name = format_vm_name(&req.vm_name, None);
+            let registry_id = self
+                .inner
+                .start_unit_on_vm(&req.service_name, &vm_name)
+                .await?;
+            Ok(StartResponse { registry_id })
+        })
+        .await
+    }
+
     async fn query_list(
         &self,
         request: tonic::Request<Empty>,

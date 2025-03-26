@@ -104,6 +104,15 @@ enum Commands {
     GetStats {
         vm_name: String,
     },
+    IssueToken {
+        #[arg(long, default_value_t = false)]
+        as_json: bool,
+        cmd: String,
+        src_vm: String,
+        src_addr: String,
+        dst_vm: String,
+        dst_addr: String,
+    },
     Watch {
         #[arg(long, default_value_t = false)]
         as_json: bool,
@@ -204,6 +213,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 }
             };
             println!("{:?}", response)
+        }
+        Commands::IssueToken {
+            as_json,
+            cmd,
+            src_vm,
+            src_addr,
+            dst_vm,
+            dst_addr,
+        } => {
+            let result =  admin.issue_token(cmd, src_vm, src_addr, dst_vm, dst_addr).await?;
+            dump(reply, as_json)?
         }
         Commands::Stop { app } => admin.stop(app).await?,
         Commands::Pause { app } => admin.pause(app).await?,

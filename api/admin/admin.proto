@@ -89,6 +89,18 @@ message TimezoneRequest {
     string Timezone = 1;
 }
 
+message TokenRequest {
+    string cmd = 1;
+    string src_vm = 2;
+    string src_addr = 3;
+    string dst_vm = 4;
+    string dst_addr = 5;
+}
+
+message TokenResponse {
+    string token = 1;
+}
+
 service AdminService {
     rpc RegisterService(RegistryRequest) returns (RegistryResponse) {}
 
@@ -114,4 +126,7 @@ service AdminService {
     // Query
     rpc QueryList(Empty) returns (QueryListResponse) {}
     rpc Watch(Empty) returns (stream WatchItem) {}
+
+    // Token
+    rpc IssueToken(TokenRequest) returns (TokenResponse) {}
 }
