@@ -287,6 +287,21 @@ impl AdminClient {
             .rewrap_err()
     }
 
+    pub async fn policy_query(
+        &self,
+        query: String,
+        policy_path: String,
+    ) -> anyhow::Result<pb::admin::PolicyQueryResponse> {
+        let request = pb::admin::PolicyQueryRequest { query, policy_path };
+        let response = self
+            .connect_to()
+            .await?
+            .policy_query(request)
+            .await
+            .rewrap_err()?;
+        Ok(response.into_inner())
+    }
+
     pub async fn watch(&self) -> anyhow::Result<WatchResult> {
         use pb::admin::WatchItem;
         use pb::admin::watch_item::Status;

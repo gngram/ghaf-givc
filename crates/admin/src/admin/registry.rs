@@ -34,18 +34,19 @@ impl Registry {
 
     pub fn register(&self, entry: RegistryEntry) {
         let mut state = self.map.lock().unwrap();
-        info!("Registering {:#?}", entry);
+        info!("Registering {:#?}", entry.name);
         let event = Event::UnitRegistered(entry.clone().into());
         if let Some(old) = state.insert(entry.name.clone(), entry) {
-            info!("Replaced old entry {:#?}", old);
+            //info!("Replaced old entry {:#?}", old);
             self.send_event(Event::UnitShutdown(old.into()))
         };
-        info!("Sending event {event:?}");
+        //info!("Sending event {event:?}");
         self.send_event(event)
     }
 
     pub fn deregister(&self, name: &str) -> anyhow::Result<()> {
         let mut state = self.map.lock().unwrap();
+        info!("Deregister {:?}", name);
         match state.remove(name) {
             Some(entry) => {
                 let cascade: Vec<String> = state
