@@ -58,6 +58,13 @@ in
                 inherit (adminConfig) name;
                 inherit (adminConfig) addresses;
                 tls.enable = tls;
+                opa = {
+                  enable = true;
+                  policies = {
+                    url = "https://github.com/gngram/ghaf-rego-policies/archive/refs/heads/main.tar.gz";
+                    sha256 = "sha256-+c0KDyEG+kRyeLN7FSScCnY3U53rcxVw06Vm6Z6kxBw=";
+                  };
+                };
               };
             };
             hostvm = {
@@ -341,7 +348,7 @@ in
                   hostvm.wait_for_unit("givc-ghaf-host.service")
                   adminvm.wait_for_unit("givc-admin.service")
                   guivm.wait_for_unit("multi-user.target")
-                  print(hostvm.succeed("${cli} ${cliArgs} get-status gui-vm multi-user.target"))
+                  #print(hostvm.succeed("${cli} ${cliArgs} get-status gui-vm multi-user.target"))
                   appvm.wait_for_unit("multi-user.target")
                   guivm.wait_for_unit("givc-gui-vm.service")
 
@@ -371,6 +378,19 @@ in
 
               with subtest("get stats"):
                   print(hostvm.succeed("${cli} ${cliArgs} get-stats app-vm"))
+
+              with subtest("USB hot plug policy"):
+                  usb_hotplug_policy = "cmd:fetch ghaf/usb/hotplug_rules/get_rules"
+                  givc_cmd = f"${cli} ${cliArgs} policy-query '{usb_hotplug_policy}'"
+                  res = hostvm.succeed(givc_cmd)
+                  try:
+                      outer = json.loads(res)
+                      inner = json.loads(outer)
+                      result = inner["result"]
+                      for vm in result:
+                          print(vm["name"])
+                  except json.JSONDecodeError as e:
+                      print(f"Failed to parse JSON: {e}")
 
               with subtest("Clean run"):
                   print(hostvm.succeed("${cli} ${cliArgs} start app --vm app-vm foot"))
