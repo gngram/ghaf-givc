@@ -677,6 +677,7 @@ dependencies = [
  "async-fn-stream",
  "async-stream",
  "clap",
+ "futures-util",
  "givc-client",
  "givc-common",
  "lazy-regex",
