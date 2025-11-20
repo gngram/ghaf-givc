@@ -3,7 +3,7 @@
 use super::entry::{Placement, RegistryEntry};
 use crate::pb::{
     self, ApplicationRequest, ApplicationResponse, Empty, ListGenerationsResponse, LocaleRequest,
-    QueryListResponse, RegistryRequest, RegistryResponse, SetGenerationRequest,
+    PushPolicyRequest, QueryListResponse, RegistryRequest, RegistryResponse, SetGenerationRequest,
     SetGenerationResponse, StartResponse, StartVmRequest, TimezoneRequest, UnitStatusRequest,
     WatchItem,
 };
@@ -14,12 +14,14 @@ use regex::Regex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio_stream::iter;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
 pub use pb::admin_service_server::AdminServiceServer;
 
 use crate::admin::registry::Registry;
+use crate::policyagent_api::client::PolicyAgentClient;
 use crate::systemd_api::client::SystemDClient;
 use crate::types::{ServiceType, UnitType, VmType};
 use crate::utils::naming::VmName;
@@ -469,6 +471,21 @@ impl pb::admin_service_server::AdminService for AdminService {
             let timezone = self.inner.timezone.lock().await.clone();
             tokio::spawn(async move {
                 if let Ok(conn) = endpoint.connect().await {
+                    // Send policy stream on registration
+                    let policy_client = PolicyAgentClient::new(endpoint.clone());
+                    let updates = iter(vec![
+                        pb::policyagent::PolicyUpdate {
+                            message: "hello world,".to_string(),
+                        },
+                        pb::policyagent::PolicyUpdate {
+                            message: "I am good to go".to_string(),
+                        },
+                    ]);
+
+                    if let Err(e) = policy_client.stream_policy(updates).await {
+                        error!("Failed to send policy stream to {}: {}", name, e);
+                    }
+
                     let mut client =
                         pb::locale::locale_client_client::LocaleClientClient::new(conn);
                     let localemsg = pb::locale::LocaleMessage {
@@ -483,6 +500,33 @@ impl pb::admin_service_server::AdminService for AdminService {
         }
         info!("Responding with {res:?}");
         Ok(Response::new(res))
+    }
+
+    async fn push_policy_stream(
+        &self,
+        request: tonic::Request<PushPolicyRequest>,
+    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status> {
+        escalate(request, async move |req| {
+            let vm_name = VmName::Vm(&req.vm_name).agent_service();
+            let endpoint = self.inner.agent_endpoint(&vm_name)?;
+            let client = PolicyAgentClient::new(endpoint);
+
+            let updates = iter(vec![
+                pb::policyagent::PolicyUpdate {
+                    message: "hello world,".to_string(),
+                },
+                pb::policyagent::PolicyUpdate {
+                    message: "I am good to go".to_string(),
+                },
+            ]);
+
+            client
+                .stream_policy(updates)
+                .await
+                .with_context(|| format!("Failed to push policy stream on {}", vm_name))?;
+            Ok(Empty {})
+        })
+        .await
     }
 
     async fn start_application(
