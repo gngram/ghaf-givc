@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package policyagent;
+
+option go_package = "givc/modules/api/policyagent";
+
+message StreamPolicyRequest {
+    string session_id = 1;
+}
+
+message PolicyUpdate {
+    string message = 1;
+}
+
+service PolicyAgent {
+    rpc StreamPolicy(stream PolicyUpdate) returns (stream PolicyUpdate);
+}
+
