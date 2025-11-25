@@ -35,32 +35,41 @@ in
       virtualisation.writableStore = true;
       virtualisation.writableStoreUseTmpfs = true;
     };
-    tests-adminvm = {
-      imports = [
-        self.nixosModules.admin
-        ./snakeoil/gen-test-certs.nix
-      ];
+    tests-adminvm =
+      { pkgs, ... }:
+      {
+        imports = [
+          self.nixosModules.admin
+          ./snakeoil/gen-test-certs.nix
+        ];
 
-      # TLS parameter
-      givc-tls-test = {
-        inherit (admin) name;
-        addresses = admin.addr;
-      };
+        # TLS parameter
+        givc-tls-test = {
+          inherit (admin) name;
+          addresses = admin.addr;
+        };
 
-      networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
-        {
-          address = addrs.adminvm;
-          prefixLength = 24;
-        }
-      ];
-      givc.admin = {
-        enable = true;
-        debug = true;
-        inherit (adminConfig) name;
-        inherit (adminConfig) addresses;
-        tls.enable = tls;
+        networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
+          {
+            address = addrs.adminvm;
+            prefixLength = 24;
+          }
+        ];
+        givc.admin = {
+          enable = true;
+          debug = true;
+          inherit (adminConfig) name;
+          inherit (adminConfig) addresses;
+          tls.enable = tls;
+          policy.opa.enable = true;
+          policy.src = pkgs.fetchFromGitHub {
+            owner = "gngram";
+            repo = "policy-store";
+            rev = "test_policy";
+            sha256 = "sha256-HsrXxNSNoFCKftyuFHZncqJAeDOxAQTSOlTgn0cBD3Q=";
+          };
+        };
       };
-    };
     tests-hostvm = {
       imports = [
         self.nixosModules.host
