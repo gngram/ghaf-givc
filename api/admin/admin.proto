@@ -65,6 +65,15 @@ message PushPolicyRequest {
     string session_id = 2;
 }
 
+message PolicyQueryRequest {
+    string Query = 1;
+    string PolicyPath = 2;
+}
+
+message PolicyQueryResponse {
+    string result = 1;
+}
+
 // Empty message
 message Empty {
 }
@@ -190,4 +199,7 @@ service AdminService {
 
     // Push a policy stream to an agent
     rpc PushPolicyStream(PushPolicyRequest) returns (Empty) {}
+
+    // Policy Query
+    rpc PolicyQuery(PolicyQueryRequest) returns (PolicyQueryResponse) {}
 }
