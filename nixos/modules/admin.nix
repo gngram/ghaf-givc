@@ -9,6 +9,8 @@
 }:
 let
   cfg = config.givc.admin;
+  opacfg = cfg.policy.opa;
+  updatercfg = cfg.policy.updater;
   inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) givc-admin;
   inherit (lib)
     mkOption
@@ -29,6 +31,7 @@ let
   tcpAddresses = lib.filter (addr: addr.protocol == "tcp") cfg.addresses;
   unixAddresses = lib.filter (addr: addr.protocol == "unix") cfg.addresses;
   vsockAddresses = lib.filter (addr: addr.protocol == "vsock") cfg.addresses;
+  opaServerPort = 8181;
 in
 {
   options.givc.admin = {
@@ -120,6 +123,40 @@ in
         > It is recommended to use a global TLS flag to avoid inconsistent configurations that will result in connection errors.
       '';
     };
+
+    policy = {
+      opa = {
+        enable = mkEnableOption "Start open policy agent service.";
+      };
+      src = mkOption {
+        description = "Policy source path";
+        type = types.nullOr types.path;
+      };
+      updater = {
+        enable = mkEnableOption "Enable policy updater.";
+        url = mkOption {
+          type = types.str;
+          description = "URL of policy store";
+          #default = "https://github.com/gngram/policy-store/archive/refs/heads/main.zip";
+        };
+        directory = mkOption {
+          type = types.str;
+          description = "Directory containing policies";
+          #default = null;
+        };
+        accessToken = mkOption {
+          type = types.nullOr types.str;
+          description = "Access token of policy url";
+          default = null;
+        };
+
+        frequency = mkOption {
+          type = types.int;
+          default = 0;
+          description = "Frequency of policy update check in seconds. 0 means once a day.";
+        };
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -130,6 +167,39 @@ in
         message = "The TLS option requires paths' to CA certificate, service certificate, and service key.";
       }
     ];
+
+    systemd.services.open-policy-agent = mkIf opacfg.enable {
+      description = "Open Policy Agent";
+      serviceConfig = {
+        type = "simple";
+        user = "opa";
+        group = "opa";
+        ExecStart = ''
+          ${pkgs.open-policy-agent}/bin/opa run \
+            --server \
+            --addr localhost:${toString opaServerPort} \
+            --watch /etc/policy/data/opa \
+        '';
+        Restart = "always";
+      };
+    };
+
+    systemd.paths.open-policy-agent = {
+      description = "Watch policy directory directory";
+      pathConfig = {
+        PathExists = "/etc/policy/data/opa";
+      };
+      wantedBy = [ "multi-user.target" ];
+    };
+
+    environment.etc = {
+      "policy/access-token" = mkIf (updatercfg.enable && updatercfg.accessToken != null) {
+        text = updatercfg.accessToken;
+        mode = "0400";
+        user = "opa";
+        group = "opa";
+      };
+    };
 
     systemd.services.givc-admin =
       let
@@ -147,6 +217,22 @@ in
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "exec";
+          ExecStartPre =
+            let
+              preStartScript = pkgs.writeScript "policy_init" ''
+                #!${pkgs.bash}/bin/bash
+                echo "DDDDDDDDDDDDDDDDDDDDDDDDDD"
+                policyDir=/etc/policy/data
+                if ! test -d "$policyDir"; then
+                  install -d -m 0755 -o root -g root "$policyDir"
+                  echo RRRRRRRRRRRRR ${config.givc.admin.policy.src} $policyDir/
+                  cp -r ${config.givc.admin.policy.src}/* $policyDir/
+                  ls -al $policyDir/
+                fi
+              '';
+            in
+            "!${preStartScript}";
+
           ExecStart = "${givc-admin}/bin/givc-admin ${args}";
           Restart = "on-failure";
           TimeoutStopSec = 5;
@@ -167,8 +253,17 @@ in
         // attrsets.optionalAttrs cfg.debug {
           "RUST_BACKTRACE" = "1";
           "GIVC_LOG" = "givc=debug,info";
+        }
+        // attrsets.optionalAttrs updatercfg.enable {
+          "POLICY_URL" = "${updatercfg.url}";
+          "POLICY_DIRECTORY" = "${updatercfg.directory}";
+          "POLICY_UPDATE_FREQUENCY" = "${updatercfg.frequency}";
+          "POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
         };
       };
-    networking.firewall.allowedTCPPorts = unique (map (addr: strings.toInt addr.port) tcpAddresses);
+
+    networking.firewall.allowedTCPPorts = unique (
+      (map (addr: strings.toInt addr.port) tcpAddresses) ++ lib.optional opacfg.enable opaServerPort
+    );
   };
 }
