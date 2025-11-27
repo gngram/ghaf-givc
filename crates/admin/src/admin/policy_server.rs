@@ -1,8 +1,6 @@
 use anyhow::anyhow;
 use reqwest::Client;
-use serde_json::Value;
-use tracing::info;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 #[derive(Debug)]
 

@@ -59,11 +59,6 @@ message UnitStatusRequest {
     string UnitName = 2;            // Name of the unit
 }
 
-message PushPolicyRequest {
-    string vm_name = 1;
-    string session_id = 2;
-}
-
 message PolicyQueryRequest {
     string Query = 1;
     string PolicyPath = 2;
@@ -187,9 +182,6 @@ service AdminService {
     // OTA
     rpc ListGenerations(Empty) returns (ListGenerationsResponse) {}
     rpc SetGeneration(SetGenerationRequest) returns (stream SetGenerationResponse) {}
-
-    // Push a policy stream to an agent
-    rpc PushPolicyStream(PushPolicyRequest) returns (Empty) {}
 
     // Policy Query
     rpc PolicyQuery(PolicyQueryRequest) returns (PolicyQueryResponse) {}
