@@ -4,9 +4,9 @@ use super::entry::{Placement, RegistryEntry};
 use super::policy_server::PolicyServer;
 use crate::pb::{
     self, ApplicationRequest, ApplicationResponse, Empty, ListGenerationsResponse, LocaleRequest,
-    PolicyQueryRequest, PolicyQueryResponse, PushPolicyRequest, QueryListResponse, RegistryRequest,
-    RegistryResponse, SetGenerationRequest, SetGenerationResponse, StartResponse, StartVmRequest,
-    TimezoneRequest, UnitStatusRequest, WatchItem,
+    PolicyQueryRequest, PolicyQueryResponse, QueryListResponse, RegistryRequest, RegistryResponse,
+    SetGenerationRequest, SetGenerationResponse, StartResponse, StartVmRequest, TimezoneRequest,
+    UnitStatusRequest, WatchItem,
 };
 use anyhow::{Context, anyhow, bail};
 use async_stream::try_stream;
@@ -185,11 +185,42 @@ impl AdminServiceImpl {
         query: &str,
         policy_path: &str,
     ) -> anyhow::Result<String> {
+        // Test code: self.push_policy_update("app-vm", "policy OOPPAA".to_string()).await?;
         let result = self
             .policy_server
             .evaluate_query(query, policy_path)
             .await?;
         Ok(result)
+    }
+
+    pub async fn push_policy_update(
+        &self,
+        vm_name: &str,
+        policy_message: String,
+    ) -> anyhow::Result<()> {
+        let agent_service_name = VmName::Vm(vm_name).agent_service();
+        info!(
+            "Pushing policy update to vm '{}' via agent '{}'",
+            vm_name, agent_service_name
+        );
+
+        let endpoint = self
+            .agent_endpoint(&agent_service_name)
+            .with_context(|| format!("Failed to get endpoint for agent {}", agent_service_name))?;
+
+        let client = PolicyAgentClient::new(endpoint);
+
+        let updates = iter(vec![pb::policyagent::PolicyUpdate {
+            message: policy_message,
+            ..Default::default()
+        }]);
+
+        client
+            .stream_policy(updates)
+            .await
+            .with_context(|| format!("Failed to send policy stream to vm '{}'", vm_name))?;
+
+        Ok(())
     }
 
     pub(crate) async fn start_unit_on_vm(
@@ -517,6 +548,7 @@ impl pb::admin_service_server::AdminService for AdminService {
         Ok(Response::new(res))
     }
 
+    /*
     async fn push_policy_stream(
         &self,
         request: tonic::Request<PushPolicyRequest>,
@@ -543,6 +575,7 @@ impl pb::admin_service_server::AdminService for AdminService {
         })
         .await
     }
+    */
 
     async fn start_application(
         &self,

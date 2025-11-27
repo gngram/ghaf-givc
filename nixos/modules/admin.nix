@@ -131,6 +131,7 @@ in
       src = mkOption {
         description = "Policy source path";
         type = types.nullOr types.path;
+        default = null;
       };
       updater = {
         enable = mkEnableOption "Enable policy updater.";
@@ -178,7 +179,7 @@ in
           ${pkgs.open-policy-agent}/bin/opa run \
             --server \
             --addr localhost:${toString opaServerPort} \
-            --watch /etc/policy/data/opa \
+            --watch /etc/policies/opa \
         '';
         Restart = "always";
       };
@@ -187,7 +188,7 @@ in
     systemd.paths.open-policy-agent = {
       description = "Watch policy directory directory";
       pathConfig = {
-        PathExists = "/etc/policy/data/opa";
+        PathExists = "/etc/policies/opa";
       };
       wantedBy = [ "multi-user.target" ];
     };
@@ -208,6 +209,15 @@ in
           ++ (map (addr: "--listen ${addr.addr}") unixAddresses)
           ++ (map (addr: "--listen vsock:${addr.addr}:${addr.port}") vsockAddresses)
         );
+        preStartScript = pkgs.writeScript "policy_init" ''
+          #!${pkgs.bash}/bin/bash
+          policyDir=/etc/policies/opa
+          if ! test -d "$policyDir"; then
+            install -d -m 0755 -o root -g root "$policyDir"
+            cp -r ${config.givc.admin.policy.src}/* $policyDir/
+            ls -al $policyDir/
+          fi
+        '';
       in
       {
         description = "GIVC admin module.";
@@ -217,26 +227,11 @@ in
         wantedBy = [ "multi-user.target" ];
         serviceConfig = {
           Type = "exec";
-          ExecStartPre =
-            let
-              preStartScript = pkgs.writeScript "policy_init" ''
-                #!${pkgs.bash}/bin/bash
-                echo "DDDDDDDDDDDDDDDDDDDDDDDDDD"
-                policyDir=/etc/policy/data
-                if ! test -d "$policyDir"; then
-                  install -d -m 0755 -o root -g root "$policyDir"
-                  echo RRRRRRRRRRRRR ${config.givc.admin.policy.src} $policyDir/
-                  cp -r ${config.givc.admin.policy.src}/* $policyDir/
-                  ls -al $policyDir/
-                fi
-              '';
-            in
-            "!${preStartScript}";
-
           ExecStart = "${givc-admin}/bin/givc-admin ${args}";
           Restart = "on-failure";
           TimeoutStopSec = 5;
           RestartSec = 1;
+          ExecStartPre = lib.optional (cfg.policy.src != null) "!${preStartScript}";
         };
         environment = {
           "NAME" = "${cfg.name}";
@@ -255,10 +250,10 @@ in
           "GIVC_LOG" = "givc=debug,info";
         }
         // attrsets.optionalAttrs updatercfg.enable {
-          "POLICY_URL" = "${updatercfg.url}";
-          "POLICY_DIRECTORY" = "${updatercfg.directory}";
-          "POLICY_UPDATE_FREQUENCY" = "${updatercfg.frequency}";
-          "POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
+          #"POLICY_URL" = "${updatercfg.url}";
+          #"POLICY_DIRECTORY" = "${updatercfg.directory}";
+          #"POLICY_UPDATE_FREQUENCY" = "${updatercfg.frequency}";
+          #"POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
         };
       };
 
