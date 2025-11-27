@@ -10,6 +10,7 @@ use crate::pb::{
 };
 use anyhow::{Context, anyhow, bail};
 use async_stream::try_stream;
+use futures_util::stream::StreamExt;
 use givc_common::query::Event;
 use regex::Regex;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use crate::utils::naming::VmName;
 use crate::utils::tonic::{Stream, escalate};
 use givc_client::endpoint::{EndpointConfig, TlsConfig};
 use givc_common::query::QueryResult;
+use tokio_util::io::ReaderStream;
 
 const VM_STARTUP_TIME: Duration = Duration::new(10, 0);
 const TIMEZONE_CONF: &str = "/etc/timezone.conf";
@@ -85,6 +87,11 @@ impl AdminService {
             });
         }
         Self { inner }
+    }
+
+    #[must_use]
+    pub fn clone_inner(&self) -> Arc<AdminServiceImpl> {
+        self.inner.clone()
     }
 }
 
@@ -196,7 +203,7 @@ impl AdminServiceImpl {
     pub async fn push_policy_update(
         &self,
         vm_name: &str,
-        policy_message: String,
+        archive_path: &std::path::Path,
     ) -> anyhow::Result<()> {
         let agent_service_name = VmName::Vm(vm_name).agent_service();
         info!(
@@ -210,11 +217,14 @@ impl AdminServiceImpl {
 
         let client = PolicyAgentClient::new(endpoint);
 
-        let updates = iter(vec![pb::policyagent::PolicyUpdate {
-            message: policy_message,
-            ..Default::default()
-        }]);
-
+        let file = tokio::fs::File::open(archive_path).await?;
+        let stream = ReaderStream::new(file);
+        let updates = stream.map(|chunk| {
+            let chunk = chunk.unwrap(); // ReaderStream doesn't error on file reads
+            pb::policyagent::PolicyUpdate {
+                archive_chunk: chunk.into(),
+            }
+        });
         client
             .stream_policy(updates)
             .await
@@ -517,8 +527,10 @@ impl pb::admin_service_server::AdminService for AdminService {
             let timezone = self.inner.timezone.lock().await.clone();
             tokio::spawn(async move {
                 if let Ok(conn) = endpoint.connect().await {
+                    /*
                     // Send policy stream on registration
                     let policy_client = PolicyAgentClient::new(endpoint.clone());
+
                     let updates = iter(vec![
                         pb::policyagent::PolicyUpdate {
                             message: "hello world,".to_string(),
@@ -531,6 +543,7 @@ impl pb::admin_service_server::AdminService for AdminService {
                     if let Err(e) = policy_client.stream_policy(updates).await {
                         error!("Failed to send policy stream to {}: {}", name, e);
                     }
+                    */
 
                     let mut client =
                         pb::locale::locale_client_client::LocaleClientClient::new(conn);

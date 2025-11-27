@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap();
 
     let admin_service = admin::server::AdminService::new(tls, cli.monitoring);
-    let admin_service_svc = admin::server::AdminServiceServer::new(admin_service);
+    let admin_service_svc = admin::server::AdminServiceServer::new(admin_service.clone());
 
     let sys_opts = tokio_listener::SystemOptions::default();
     let user_opts = tokio_listener::UserOptions::default();
@@ -79,12 +79,17 @@ async fn main() -> anyhow::Result<()> {
         tokio_listener::Listener::bind_multiple(&cli.listen, &sys_opts, &user_opts).await?;
 
     let policy_url =
-        "https://github.com/gngram/policy-store/archive/refs/heads/test_policy.tar.gz".to_string();
+        "http://github.com/gngram/policy-store/archive/refs/heads/test_policy.tar.gz".to_string();
     let token_file = Some(PathBuf::from("/tmp/token.txt"));
     let duration = std::time::Duration::from_secs(10);
-    admin::policy_updater::start_updater(policy_url, duration, token_file)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    admin::policy_updater::start_updater(
+        admin_service.clone_inner(),
+        policy_url,
+        duration,
+        token_file,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!(e))?;
 
     builder
         .add_service(reflect)

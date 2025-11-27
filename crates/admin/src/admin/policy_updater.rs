@@ -69,12 +69,14 @@ fn load_etag_from_file(path: &Path) -> Option<String> {
 
 pub fn monitor_policy_url(
     client: Client,
+    admin_service: Arc<super::server::AdminServiceImpl>,
     policy_url: String,
     poll_interval: Duration,
     token_file: Option<PathBuf>,
     on_update: NewPolicyCallback,
 ) {
     tokio::spawn(async move {
+        let _admin_service = admin_service;
         let mut token = None;
 
         if let Some(token_path) = token_file.as_ref() {
@@ -176,8 +178,9 @@ pub fn monitor_policy_url(
     });
 }
 
-fn make_extract_callback() -> NewPolicyCallback {
+fn handle_new_policy(admin_service: Arc<super::server::AdminServiceImpl>) -> NewPolicyCallback {
     Arc::new(move |source_archive: &Path| {
+        let admin_service = admin_service.clone();
         let output_dir = Path::new(POLICY_STORE);
 
         let tar_gz = File::open(source_archive)?;
@@ -185,6 +188,12 @@ fn make_extract_callback() -> NewPolicyCallback {
         let mut archive = Archive::new(tar);
 
         let mut vm_archives: HashMap<String, Builder<GzEncoder<File>>> = HashMap::new();
+
+        if output_dir.exists() {
+            info!("Cleaning policy store: {}", output_dir.display());
+            fs::remove_dir_all(output_dir)?;
+        }
+        fs::create_dir_all(output_dir)?;
 
         info!("Unpacking new policies...");
 
@@ -255,12 +264,23 @@ fn make_extract_callback() -> NewPolicyCallback {
         for (name, mut builder) in vm_archives {
             builder.finish()?;
             info!("Finished archive for: {}", name);
+            let admin_service = admin_service.clone();
+            tokio::spawn(async move {
+                let archive_path = output_dir
+                    .join("vm-policies")
+                    .join(format!("{}.tar.gz", name));
+                if let Err(e) = admin_service.push_policy_update(&name, &archive_path).await {
+                    error!("Failed to push policy update to {}: {}", name, e);
+                }
+            });
         }
+
         Ok(())
     })
 }
 
 pub async fn start_updater(
+    admin_service: Arc<super::server::AdminServiceImpl>,
     policy_url: String,
     poll_interval: Duration,
     token_file: Option<PathBuf>,
@@ -272,8 +292,15 @@ pub async fn start_updater(
         info!("URL access token: {}", path.display());
     }
 
-    let callback = make_extract_callback();
+    let callback = handle_new_policy(admin_service.clone());
 
-    monitor_policy_url(client, policy_url, poll_interval, token_file, callback);
+    monitor_policy_url(
+        client,
+        admin_service,
+        policy_url,
+        poll_interval,
+        token_file,
+        callback,
+    );
     Ok(())
 }
