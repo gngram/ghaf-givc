@@ -67,7 +67,7 @@ func (x *StreamPolicyRequest) GetSessionId() string {
 
 type PolicyUpdate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	ArchiveChunk  []byte                 `protobuf:"bytes,1,opt,name=archive_chunk,json=archiveChunk,proto3" json:"archive_chunk,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,11 +102,11 @@ func (*PolicyUpdate) Descriptor() ([]byte, []int) {
 	return file_policyagent_policyagent_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *PolicyUpdate) GetMessage() string {
+func (x *PolicyUpdate) GetArchiveChunk() []byte {
 	if x != nil {
-		return x.Message
+		return x.ArchiveChunk
 	}
-	return ""
+	return nil
 }
 
 var File_policyagent_policyagent_proto protoreflect.FileDescriptor
@@ -116,9 +116,9 @@ const file_policyagent_policyagent_proto_rawDesc = "" +
 	"\x1dpolicyagent/policyagent.proto\x12\vpolicyagent\"4\n" +
 	"\x13StreamPolicyRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"(\n" +
-	"\fPolicyUpdate\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage2W\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"3\n" +
+	"\fPolicyUpdate\x12#\n" +
+	"\rarchive_chunk\x18\x01 \x01(\fR\farchiveChunk2W\n" +
 	"\vPolicyAgent\x12H\n" +
 	"\fStreamPolicy\x12\x19.policyagent.PolicyUpdate\x1a\x19.policyagent.PolicyUpdate(\x010\x01B\x1eZ\x1cgivc/modules/api/policyagentb\x06proto3"
 

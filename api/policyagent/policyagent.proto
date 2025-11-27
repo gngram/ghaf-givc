@@ -9,10 +9,9 @@ message StreamPolicyRequest {
 }
 
 message PolicyUpdate {
-    string message = 1;
+    bytes archive_chunk = 1;
 }
 
 service PolicyAgent {
     rpc StreamPolicy(stream PolicyUpdate) returns (stream PolicyUpdate);
 }
-
