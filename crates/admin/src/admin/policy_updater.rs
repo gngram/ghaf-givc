@@ -287,9 +287,10 @@ pub async fn start_updater(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::new();
 
-    info!("Policy Repo URL: {}", policy_url);
+    info!("GGGG Policy Repo URL: {}", policy_url);
+    info!("GGGG Poll interval: {}", poll_interval.as_secs());
     if let Some(path) = token_file.as_ref() {
-        info!("URL access token: {}", path.display());
+        info!("GGGG URL access token: {}", path.display());
     }
 
     let callback = handle_new_policy(admin_service.clone());

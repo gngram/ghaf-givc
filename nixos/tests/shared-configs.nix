@@ -66,8 +66,11 @@ in
             owner = "gngram";
             repo = "policy-store";
             rev = "test_policy";
-            sha256 = "sha256-HsrXxNSNoFCKftyuFHZncqJAeDOxAQTSOlTgn0cBD3Q=";
+            sha256 = "sha256-obk0kaR3l/QLxJz7dDJLMjMVzPyGlkYsJ+vuxjhzmhE=";
           };
+          policy.updater.enable = false;
+          policy.updater.url = "http://github.com/gngram/policy-store/archive/refs/heads/test_policy.tar.gz";
+          policy.updater.interval = 0;
         };
       };
     tests-hostvm = {

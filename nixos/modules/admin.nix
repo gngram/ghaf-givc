@@ -32,6 +32,7 @@ let
   unixAddresses = lib.filter (addr: addr.protocol == "unix") cfg.addresses;
   vsockAddresses = lib.filter (addr: addr.protocol == "vsock") cfg.addresses;
   opaServerPort = 8181;
+
 in
 {
   options.givc.admin = {
@@ -140,21 +141,16 @@ in
           description = "URL of policy store";
           #default = "https://github.com/gngram/policy-store/archive/refs/heads/main.zip";
         };
-        directory = mkOption {
-          type = types.str;
-          description = "Directory containing policies";
-          #default = null;
-        };
         accessToken = mkOption {
           type = types.nullOr types.str;
           description = "Access token of policy url";
           default = null;
         };
 
-        frequency = mkOption {
+        interval = mkOption {
           type = types.int;
           default = 0;
-          description = "Frequency of policy update check in seconds. 0 means once a day.";
+          description = "Interval of policy update check in seconds. 0 means once a day.";
         };
       };
     };
@@ -197,8 +193,8 @@ in
       "policy/access-token" = mkIf (updatercfg.enable && updatercfg.accessToken != null) {
         text = updatercfg.accessToken;
         mode = "0400";
-        user = "opa";
-        group = "opa";
+        user = "root";
+        group = "root";
       };
     };
 
@@ -211,12 +207,33 @@ in
         );
         preStartScript = pkgs.writeScript "policy_init" ''
           #!${pkgs.bash}/bin/bash
-          policyDir=/etc/policies/opa
-          if ! test -d "$policyDir"; then
+          policyDir=/etc/policies
+          if [ ! -d "$policyDir" ]; then
             install -d -m 0755 -o root -g root "$policyDir"
-            cp -r ${config.givc.admin.policy.src}/* $policyDir/
-            ls -al $policyDir/
           fi
+          if [ ! -d "$policyDir/opa" ]; then
+            if [ -d "${config.givc.admin.policy.src}/opa" ]; then
+              cp -r ${config.givc.admin.policy.src}/opa $policyDir/
+            fi
+          fi
+          if [ ! -d "$policyDir/vm-policies" ]; then
+            if [ -d "${config.givc.admin.policy.src}/vm-policies" ]; then
+              install -d -m 0755 -o root -g root $policyDir/vm-policies
+              for vm_path in ${config.givc.admin.policy.src}/vm-policies/*; do
+                if [ -d "$vm_path" ]; then
+                  # Get the folder name (e.g., "vm-a")
+                  vm_name=$(basename "$vm_path")
+
+                  echo "Packaging $vm_name..."
+                  ${pkgs.gnutar}/bin/tar --sort=name \
+                     --mtime='@0' \
+                     --owner=0 --group=0 --numeric-owner \
+                     -czf "$policyDir/vm-policies/$vm_name.tar.gz" \
+                     -C ${config.givc.admin.policy.src}/vm-policies "$vm_name"
+                fi
+              done
+            fi
+          fi 
         '';
       in
       {
@@ -239,6 +256,7 @@ in
           "SUBTYPE" = "5";
           "TLS" = "${trivial.boolToString cfg.tls.enable}";
           "SERVICES" = "${concatStringsSep " " cfg.services}";
+          "POLICY_UPDATER" = "${trivial.boolToString updatercfg.enable}";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";
@@ -250,10 +268,9 @@ in
           "GIVC_LOG" = "givc=debug,info";
         }
         // attrsets.optionalAttrs updatercfg.enable {
-          #"POLICY_URL" = "${updatercfg.url}";
-          #"POLICY_DIRECTORY" = "${updatercfg.directory}";
-          #"POLICY_UPDATE_FREQUENCY" = "${updatercfg.frequency}";
-          #"POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
+          "POLICY_URL" = "${updatercfg.url}";
+          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
+          "POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
         };
       };
 

@@ -5,7 +5,7 @@ use givc::endpoint::TlsConfig;
 use givc_common::pb::reflection::ADMIN_DESCRIPTOR;
 use std::path::PathBuf;
 use tonic::transport::Server;
-use tracing::debug;
+use tracing::{debug, info};
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "givc-admin")]
@@ -20,6 +20,9 @@ struct Cli {
     #[arg(long, env = "TLS")]
     use_tls: bool,
 
+    #[arg(long, env = "POLICY_UPDATER")]
+    policy_updater: bool,
+
     #[arg(long, env = "CA_CERT")]
     ca_cert: Option<PathBuf>,
 
@@ -31,6 +34,15 @@ struct Cli {
 
     #[arg(long, env = "GIVC_MONITORING", default_value_t = true)]
     monitoring: bool,
+
+    #[arg(long, env = "POLICY_URL")]
+    policy_url: Option<PathBuf>,
+
+    #[arg(long, env = "POLICY_UPDATE_INTERVAL")]
+    policy_update_interval: Option<String>,
+
+    #[arg(long, env = "POLICY_URL_ACCESS_TOKEN")]
+    policy_access_token: Option<PathBuf>,
 
     #[arg(
         long,
@@ -75,22 +87,30 @@ async fn main() -> anyhow::Result<()> {
     let sys_opts = tokio_listener::SystemOptions::default();
     let user_opts = tokio_listener::UserOptions::default();
 
+    info!("GGGGG givc-admin.");
     let listener =
         tokio_listener::Listener::bind_multiple(&cli.listen, &sys_opts, &user_opts).await?;
 
-    let policy_url =
-        "http://github.com/gngram/policy-store/archive/refs/heads/test_policy.tar.gz".to_string();
-    let token_file = Some(PathBuf::from("/tmp/token.txt"));
-    let duration = std::time::Duration::from_secs(10);
-    admin::policy_updater::start_updater(
-        admin_service.clone_inner(),
-        policy_url,
-        duration,
-        token_file,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!(e))?;
-
+    if (cli.policy_updater) {
+        let policy_url = cli
+            .policy_url
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let token_file = cli.policy_access_token;
+        let duration = cli
+            .policy_update_interval
+            .map(|p| std::time::Duration::from_secs(p.to_string().parse().unwrap()))
+            .unwrap_or_default();
+        admin::policy_updater::start_updater(
+            admin_service.clone_inner(),
+            policy_url,
+            duration,
+            token_file,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    info!("GGGGG givc-adminnnnnnnnnnnnn.");
     builder
         .add_service(reflect)
         .add_service(admin_service_svc)
