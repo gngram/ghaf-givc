@@ -408,6 +408,7 @@ impl AdminServiceImpl {
     // Refactoring kludge
     pub fn register(&self, entry: RegistryEntry) {
         self.registry.register(entry);
+        info!("GGGGGGGGGGG Registered");
     }
 
     pub(crate) async fn start_app(&self, req: ApplicationRequest) -> anyhow::Result<String> {
