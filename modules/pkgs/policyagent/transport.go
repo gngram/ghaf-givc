@@ -41,31 +41,46 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		return err
 	}
 	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
+
+	changeSet := ""
+	oldRev := ""
+	newRev := ""
 
 	for {
-		// Receive a chunk from the client (givc-admin)
 		in, err := stream.Recv()
 		if err == io.EOF {
-			// The client has closed the stream.
-			log.Info("Policy stream finished. Received complete archive.")
+
+			log.Infof("PolicyAgent received message from givc-admin.")
 			break
 		}
 		if err != nil {
 			log.Errorf("Error receiving from policy stream: %v", err)
-			return err
+			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
+		}
+		archive_chunk := in.GetArchiveChunk()
+		if archive_chunk != nil {
+			log.Infof("Writing chunk of %d bytes to temporary file....", len(archive_chunk))
+			if _, err := tempFile.Write(archive_chunk); err != nil {
+				log.Errorf("Failed to write to temporary file: %v", err)
+				return stream.SendAndClose(&pb.Status{Status: "FAILED"})
+			}
 		}
 
-		if _, err := tempFile.Write(in.GetArchiveChunk()); err != nil {
-			log.Errorf("Failed to write to temporary file: %v", err)
-			return err
+		if val := in.GetChangeSet(); val != "" {
+			changeSet = val
+		}
+		if val := in.GetOldRev(); val != "" {
+			oldRev = val
+		}
+		if val := in.GetNewRev(); val != "" {
+			newRev = val
 		}
 	}
 
-	if err := tempFile.Close(); err != nil {
-		log.Errorf("Failed to close temporary file: %v", err)
-		return err
-	}
+	log.Infof("Policy update info: ChangeSet=%s OldRev=%s NewRev=%s, Size:%d bytes", changeSet, oldRev, newRev)
+
+	// Close the temporary file
+	tempFile.Close()
 
 	// Now, extract the tar.gz file
 	destDir := "/etc/policies"
@@ -76,8 +91,8 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		return err
 	}
 
-	log.Info("Successfully extracted policies.")
-	return nil
+	log.Infof("Successfully extracted policies.")
+	return stream.SendAndClose(&pb.Status{Status: "OK"})
 }
 
 // extractTarGz extracts a .tar.gz file to a destination directory.
@@ -117,7 +132,7 @@ func extractTarGz(tarGzPath string, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
 			if err != nil {
 				return err
 			}

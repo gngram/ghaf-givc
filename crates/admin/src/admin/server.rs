@@ -204,6 +204,9 @@ impl AdminServiceImpl {
         &self,
         vm_name: &str,
         archive_path: &std::path::Path,
+        old_rev: &str,
+        new_rev: &str,
+        change_set: &str,
     ) -> anyhow::Result<()> {
         let agent_service_name = VmName::Vm(vm_name).agent_service();
         info!(
@@ -219,10 +222,19 @@ impl AdminServiceImpl {
 
         let file = tokio::fs::File::open(archive_path).await?;
         let stream = ReaderStream::new(file);
-        let updates = stream.map(|chunk| {
+
+        let old_rev = old_rev.to_string();
+        let new_rev = new_rev.to_string();
+        let change_set = change_set.to_string();
+
+        let updates = stream.map(move |chunk| {
             let chunk = chunk.unwrap(); // ReaderStream doesn't error on file reads
-            pb::policyagent::PolicyUpdate {
+            info!("CCCCCChunk Size: {} bytes", chunk.len());
+            pb::policyagent::StreamPolicyRequest {
                 archive_chunk: chunk.into(),
+                old_rev: old_rev.clone(),
+                new_rev: new_rev.clone(),
+                change_set: change_set.clone(),
             }
         });
         client
@@ -407,8 +419,11 @@ impl AdminServiceImpl {
 
     // Refactoring kludge
     pub fn register(&self, entry: RegistryEntry) {
+        let binding = entry.clone();
+        let name = binding.vm_name().clone();
+        let agent = binding.agent_name().clone();
         self.registry.register(entry);
-        info!("GGGGGGGGGGG Registered");
+        info!("RRR Registered:{:#?}, agent= {:#?}", name, agent);
     }
 
     pub(crate) async fn start_app(&self, req: ApplicationRequest) -> anyhow::Result<String> {
@@ -524,10 +539,35 @@ impl pb::admin_service_server::AdminService for AdminService {
         if let Some(name) = notify
             && let Ok(endpoint) = self.inner.agent_endpoint(&name)
         {
+            // Clone self.inner here to move into the spawned task
+            let inner_clone = self.inner.clone();
+            let vm_name = endpoint.transport.tls_name.clone();
+            let policy_cache_path =
+                std::path::PathBuf::from(format!("/etc/policies/.cache/{}.tar.gz", vm_name));
+
             let locale_assigns = self.inner.locale_assigns.lock().await.clone();
             let timezone = self.inner.timezone.lock().await.clone();
             tokio::spawn(async move {
+                // `async move` captures `inner_clone`
                 if let Ok(conn) = endpoint.connect().await {
+                    // Check if the policy archive exists and push it
+                    if tokio::fs::metadata(&policy_cache_path).await.is_ok() {
+                        // Use inner_clone
+                        if let Err(e) = inner_clone
+                            .push_policy_update(
+                                &vm_name,
+                                &policy_cache_path,
+                                "CCCC".to_string().as_str(),
+                                "BBBB".to_string().as_str(),
+                                "AAAA".to_string().as_str(),
+                            )
+                            .await
+                        {
+                            error!("Failed to push cached policy update to {}: {}", vm_name, e);
+                        }
+                    } else {
+                        debug!("No cached policy archive found for {}", vm_name);
+                    }
                     /*
                     // Send policy stream on registration
                     let policy_client = PolicyAgentClient::new(endpoint.clone());

@@ -23,7 +23,7 @@ import (
 	givc_hwidmanager "givc/modules/pkgs/hwidmanager"
 	givc_localelistener "givc/modules/pkgs/localelistener"
 	givc_notifier "givc/modules/pkgs/notifier"
-        givc_policyagent "givc/modules/pkgs/policyagent"
+	givc_policyagent "givc/modules/pkgs/policyagent"
 	givc_registration "givc/modules/pkgs/registration"
 	givc_servicemanager "givc/modules/pkgs/servicemanager"
 	givc_statsmanager "givc/modules/pkgs/statsmanager"

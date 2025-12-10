@@ -60,11 +60,6 @@ message UnitStatusRequest {
     string UnitName = 2;            // Name of the unit
 }
 
-message PushPolicyRequest {
-    string vm_name = 1;
-    string session_id = 2;
-}
-
 message PolicyQueryRequest {
     string Query = 1;
     string PolicyPath = 2;
@@ -196,9 +191,6 @@ service AdminService {
 
     // Send user notification
     rpc NotifyUser(UserNotificationRequest) returns (notify.Status) {}
-
-    // Push a policy stream to an agent
-    rpc PushPolicyStream(PushPolicyRequest) returns (Empty) {}
 
     // Policy Query
     rpc PolicyQuery(PolicyQueryRequest) returns (PolicyQueryResponse) {}

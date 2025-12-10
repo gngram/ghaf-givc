@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::pb::policyagent::{
-    PolicyUpdate, policy_agent_client::PolicyAgentClient as GrpcPolicyAgentClient,
+    StreamPolicyRequest, policy_agent_client::PolicyAgentClient as GrpcPolicyAgentClient,
 };
 use anyhow::Result;
 use futures_util::stream::Stream;
@@ -26,10 +26,13 @@ impl PolicyAgentClient {
 
     pub async fn stream_policy(
         &self,
-        updates: impl Stream<Item = PolicyUpdate> + Send + 'static,
+        updates: impl Stream<Item = StreamPolicyRequest> + Send + 'static,
     ) -> Result<()> {
         let mut client = self.connect().await?;
-        client.stream_policy(updates).await?;
+        let response = client.stream_policy(updates).await?.into_inner();
+        if response.status != "OK" {
+            return Err(anyhow::anyhow!("Policy update failed: {}", response.status));
+        }
         Ok(())
     }
 }

@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     let sys_opts = tokio_listener::SystemOptions::default();
     let user_opts = tokio_listener::UserOptions::default();
 
-    info!("GGGGG givc-admin.");
+    info!("GGGGG givc-admin.{}", cli.policy_updater);
     let listener =
         tokio_listener::Listener::bind_multiple(&cli.listen, &sys_opts, &user_opts).await?;
 

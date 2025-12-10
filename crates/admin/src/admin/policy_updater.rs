@@ -13,7 +13,7 @@ use tar::{Archive, Builder};
 use tokio::time::sleep;
 use tracing::{error, info};
 
-const POLICY_STORE: &str = "/etc/policies";
+const POLICY_STORE: &str = "/etc/policies/data";
 
 pub type NewPolicyCallback =
     Arc<dyn Fn(&Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
@@ -238,7 +238,7 @@ fn handle_new_policy(admin_service: Arc<super::server::AdminServiceImpl>) -> New
                         let parent_path = output_dir.join("vm-policies");
 
                         std::fs::create_dir_all(&parent_path)
-                            .expect("Failed to create vm-policies dir");
+                            .expect("Failed to crstart_updatereate vm-policies dir");
 
                         let archive_path = parent_path.join(format!("{}.tar.gz", vm_name));
                         info!("Creating Archive: {:?}", archive_path);
@@ -265,11 +265,18 @@ fn handle_new_policy(admin_service: Arc<super::server::AdminServiceImpl>) -> New
             builder.finish()?;
             info!("Finished archive for: {}", name);
             let admin_service = admin_service.clone();
+            let change_set = "vm-policies\nfile1\nfile2";
+            let old_rev = "0000";
+            let new_rev = "1111";
+
             tokio::spawn(async move {
                 let archive_path = output_dir
                     .join("vm-policies")
                     .join(format!("{}.tar.gz", name));
-                if let Err(e) = admin_service.push_policy_update(&name, &archive_path).await {
+                if let Err(e) = admin_service
+                    .push_policy_update(&name, &archive_path, old_rev, new_rev, change_set)
+                    .await
+                {
                     error!("Failed to push policy update to {}: {}", name, e);
                 }
             });

@@ -5,13 +5,16 @@ package policyagent;
 option go_package = "givc/modules/api/policyagent";
 
 message StreamPolicyRequest {
-    string session_id = 1;
+    bytes archive_chunk = 1;
+    string change_set = 2;
+    string old_rev = 3;
+    string new_rev = 4;
 }
 
-message PolicyUpdate {
-    bytes archive_chunk = 1;
+message Status {
+    string Status = 1;
 }
 
 service PolicyAgent {
-    rpc StreamPolicy(stream PolicyUpdate) returns (stream PolicyUpdate);
+    rpc StreamPolicy(stream StreamPolicyRequest) returns (Status);
 }

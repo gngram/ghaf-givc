@@ -32,6 +32,8 @@ let
   unixAddresses = lib.filter (addr: addr.protocol == "unix") cfg.addresses;
   vsockAddresses = lib.filter (addr: addr.protocol == "vsock") cfg.addresses;
   opaServerPort = 8181;
+  opaPolicyDir = "/etc/policies/data/opa";
+  opaUser = "opa";
 
 in
 {
@@ -165,26 +167,32 @@ in
       }
     ];
 
+    users.users."${opaUser}" = mkIf opacfg.enable {
+      isSystemUser = true;
+      group = opaUser;
+    };
+    users.groups."${opaUser}" = mkIf opacfg.enable { };
+
     systemd.services.open-policy-agent = mkIf opacfg.enable {
       description = "Open Policy Agent";
       serviceConfig = {
-        type = "simple";
-        user = "opa";
-        group = "opa";
+        Type = "simple";
+        User = "${opaUser}";
+        Group = "${opaUser}";
         ExecStart = ''
           ${pkgs.open-policy-agent}/bin/opa run \
             --server \
             --addr localhost:${toString opaServerPort} \
-            --watch /etc/policies/opa \
+            --watch ${opaPolicyDir} \
         '';
         Restart = "always";
       };
     };
 
-    systemd.paths.open-policy-agent = {
+    systemd.paths.open-policy-agent = mkIf opacfg.enable {
       description = "Watch policy directory directory";
       pathConfig = {
-        PathExists = "/etc/policies/opa";
+        PathExists = "${opaPolicyDir}";
       };
       wantedBy = [ "multi-user.target" ];
     };
@@ -209,31 +217,34 @@ in
           #!${pkgs.bash}/bin/bash
           policyDir=/etc/policies
           if [ ! -d "$policyDir" ]; then
-            install -d -m 0755 -o root -g root "$policyDir"
+            install -d -m 0755 -o root -g root "$policyDir/.cache"
           fi
-          if [ ! -d "$policyDir/opa" ]; then
-            if [ -d "${config.givc.admin.policy.src}/opa" ]; then
-              cp -r ${config.givc.admin.policy.src}/opa $policyDir/
-            fi
+          if [ ! -d "$policyDir/data" ]; then
+            cp -r ${config.givc.admin.policy.src} $policyDir/data
+            chown -R ${opaUser}:${opaUser} ${opaPolicyDir}
           fi
-          if [ ! -d "$policyDir/vm-policies" ]; then
-            if [ -d "${config.givc.admin.policy.src}/vm-policies" ]; then
-              install -d -m 0755 -o root -g root $policyDir/vm-policies
-              for vm_path in ${config.givc.admin.policy.src}/vm-policies/*; do
-                if [ -d "$vm_path" ]; then
-                  # Get the folder name (e.g., "vm-a")
-                  vm_name=$(basename "$vm_path")
+          rm -rf $policyDir/.cache/*
+          if [ "$policyDir/data/vm-policies" ]; then
+            for vm_path in $policyDir/data/vm-policies/*; do
+              if [ -d "$vm_path" ]; then
+                # Get the folder name (e.g., "vm-a")
+                vm_name=$(basename "$vm_path")
+                echo "Packaging $vm_name..."
+                ${pkgs.gnutar}/bin/tar --sort=name \
+                  --mtime='@0' \
+                  --owner=0 --group=0 --numeric-owner \
+                  -czf "$policyDir/.cache/$vm_name.tar.gz" \
+                  -C $policyDir/data/vm-policies "$vm_name"
+              fi
+            done
+          fi
+          echo "TTTTTTTTTTTTTT"
+          ls -al $policyDir
+          echo "JJJJJJJJJJJJJJJJJJJJ"
+          ls -al $policyDir/data
+          echo "JJJJJJJJJJJJJJJJXXX"
+          ls -al $policyDir/.cache
 
-                  echo "Packaging $vm_name..."
-                  ${pkgs.gnutar}/bin/tar --sort=name \
-                     --mtime='@0' \
-                     --owner=0 --group=0 --numeric-owner \
-                     -czf "$policyDir/vm-policies/$vm_name.tar.gz" \
-                     -C ${config.givc.admin.policy.src}/vm-policies "$vm_name"
-                fi
-              done
-            fi
-          fi 
         '';
       in
       {
@@ -250,6 +261,9 @@ in
           RestartSec = 1;
           ExecStartPre = lib.optional (cfg.policy.src != null) "!${preStartScript}";
         };
+        path = [
+          pkgs.gzip
+        ];
         environment = {
           "NAME" = "${cfg.name}";
           "TYPE" = "4";
