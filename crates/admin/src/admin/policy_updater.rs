@@ -13,302 +13,536 @@ use tar::{Archive, Builder};
 use tokio::time::sleep;
 use tracing::{error, info};
 
-const POLICY_STORE: &str = "/etc/policies/data";
+use anyhow::{Context, Result};
+use gix;
+use gix::bstr::ByteSlice;
+use gix::object::tree::diff::{Action, Change};
+use std::path::PathBuf;
+use tracing::info;
 
-pub type NewPolicyCallback =
-    Arc<dyn Fn(&Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send + Sync>;
+/* RepoUpdater structure */
+pub struct RepoUpdater {
+    pub url: String,
+    pub branch: String,
+    pub destination: PathBuf,
+    pub remote_name: String,
 
-fn load_token_from_file(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
+    repo: Option<gix::Repository>,
+    repo_head: Option<gix::hash::ObjectId>,
+}
+
+impl RepoUpdater {
+    pub fn new<U: Into<String>, B: Into<String>, P: Into<PathBuf>>(
+        url: U,
+        branch: B,
+        destination: P,
+    ) -> Result<Self> {
+        Self::new_inner(url, branch, destination, "origin")
     }
-    match fs::read_to_string(path) {
-        Ok(s) => {
-            let trimmed = s.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+
+    fn new_inner<U: Into<String>, B: Into<String>, P: Into<PathBuf>, R: Into<String>>(
+        url: U,
+        branch: B,
+        destination: P,
+        remote: R,
+    ) -> Result<Self> {
+        let mut updater = Self {
+            url: url.into(),
+            branch: branch.into(),
+            destination: destination.into(),
+            remote_name: remote.into(),
+            repo: None,
+            repo_head: None,
+        };
+
+        /* Attempt to load and validate policies from the existing repository */
+        if updater.destination.exists() {
+            match gix::open(&updater.destination) {
+                Ok(repo) => {
+                    /*
+                      Validate branch and URL match from config.
+                      Branch is fixed to avoid any merge conflict.
+                    */
+                    let head_ref = repo.head()?;
+                    let _current_branch = head_ref
+                        .referent_name()
+                        .map(|r| r.shorten().to_string())
+                        .unwrap_or_default();
+
+                    let remote_url = repo
+                        .config_snapshot()
+                        .string("remote.origin.url")
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+
+                    if remote_url == updater.url {
+                        info!(
+                            "Successfully loaded existing repository from '{}'",
+                            updater.destination.display()
+                        );
+                        let head = repo.head_id()?;
+                        updater.repo_head = Some(head.detach());
+                        updater.repo = Some(repo);
+                        return Ok(updater);
+                    } else {
+                        info!(
+                            "Repository at '{}' is not from provided source. Re-cloning...",
+                            updater.destination.display()
+                        );
+                    }
+                }
+                Err(_) => {
+                    info!(
+                        "Path '{}' exists but is not a valid git repository. Re-cloning...",
+                        updater.destination.display()
+                    );
+                }
+            }
+
+            /* Clean up invalid directory (if exists) before cloning */
+            std::fs::remove_dir_all(&updater.destination).with_context(|| {
+                format!(
+                    "Failed to delete directory '{}'",
+                    updater.destination.display()
+                )
+            })?;
+        }
+
+        updater.clone_repo()?;
+        Ok(updater)
+    }
+
+    fn clone_repo(&mut self) -> Result<()> {
+        info!("Cloning repository from: {}", self.url);
+        info!("Branch: {}", self.branch);
+        info!("Destination: {:?}", self.destination);
+
+        let interrupt = &gix::interrupt::IS_INTERRUPTED;
+
+        let mut prepare = gix::prepare_clone(self.url.as_str(), &self.destination)?
+            .with_ref_name(Some(self.branch.as_str()))?;
+
+        let (mut checkout, _fetch_outcome) =
+            prepare.fetch_then_checkout(gix::progress::Discard, interrupt)?;
+
+        let (repo, _checkout_outcome) =
+            checkout.main_worktree(gix::progress::Discard, interrupt)?;
+
+        let head = repo.head_id()?;
+        self.repo_head = Some(head.detach());
+        self.repo = Some(repo);
+
+        info!("Repository cloned successfully.");
+        info!("Checked out HEAD: {}", self.repo_head.as_ref().unwrap());
+        Ok(())
+    }
+
+    pub fn repo_head(&self) -> Option<gix::hash::ObjectId> {
+        self.repo_head
+    }
+
+    fn fetch(&self) -> Result<()> {
+        let repo = self.repo.as_ref().context("Repo should be initialized")?;
+        let remote_name = self.remote_name.as_str();
+        let remote = repo.find_remote(remote_name)?;
+
+        let mut progress = gix::progress::Discard;
+        let _fetch_outcome = remote
+            .connect(gix::remote::Direction::Fetch)?
+            .prepare_fetch(&mut progress, Default::default())?
+            .receive(progress, &gix::interrupt::IS_INTERRUPTED)?;
+        Ok(())
+    }
+
+    fn checkout(&mut self, commit_id: gix::hash::ObjectId) -> Result<()> {
+        let repo = self.repo.as_ref().context("Repo should be initialized")?;
+        let local_branch = format!("refs/heads/{}", self.branch);
+        let remote_name = self.remote_name.as_str();
+
+        // Create or update local branch
+        match repo.find_reference(&local_branch) {
+            Ok(mut branch_ref) => {
+                // Branch exists, update it
+                branch_ref.set_target_id(commit_id, "fast-forward from remote")?;
+            }
+            Err(_) => {
+                // Create new branch
+                repo.reference(
+                    local_branch.as_str(),
+                    commit_id,
+                    gix::refs::transaction::PreviousValue::MustNotExist,
+                    format!("branch from {}/{}", remote_name, self.branch),
+                )?;
             }
         }
-        Err(e) => {
-            error!("Failed to read token file {}: {e}", path.display());
-            None
+
+        // Update HEAD to point to the branch symbolically
+        std::fs::write(
+            repo.git_dir().join("HEAD"),
+            format!("ref: {}\n", local_branch),
+        )?;
+
+        // Perform checkout to update working directory
+        let commit = repo.find_object(commit_id)?.into_commit();
+        let tree = commit.tree()?;
+
+        // Checkout the tree to the working directory
+        let mut index = repo.index_from_tree(&tree.id)?;
+        let opts = gix::worktree::state::checkout::Options {
+            overwrite_existing: true,
+            ..Default::default()
+        };
+        let objects = repo.objects.clone().into_arc()?;
+
+        gix::worktree::state::checkout(
+            &mut index,
+            repo.workdir()
+                .context("Repository has no working directory")?,
+            objects,
+            &gix::progress::Discard,
+            &gix::progress::Discard,
+            &gix::interrupt::IS_INTERRUPTED,
+            opts,
+        )?;
+
+        // Write the index to disk
+        index.write(gix::index::write::Options::default())?;
+
+        // Update repo_head to the new commit
+        self.repo_head = Some(commit_id);
+        info!("Checked out HEAD: {}", commit_id);
+        Ok(())
+    }
+
+    pub fn get_update(&mut self) -> Result<Option<gix::hash::ObjectId>> {
+        if self.repo.is_none() {
+            self.clone_repo()?;
         }
+        // Store the old head for comparison
+        let old_head = self.repo_head;
+
+        self.fetch()?;
+
+        let commit_id = {
+            let repo = self.repo.as_ref().context("Repo should be initialized")?;
+            let remote_tracking = format!("refs/remotes/{}/{}", self.remote_name, self.branch);
+            let remote_ref = repo.find_reference(&remote_tracking)?;
+            remote_ref.id().detach()
+        };
+
+        self.checkout(commit_id)?;
+
+        // Return the new head if it changed, otherwise None
+        if old_head != self.repo_head {
+            Ok(old_head)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_change_set(&self, from_rev: &str, to_rev: &str) -> Result<String> {
+        let repo = self
+            .repo
+            .as_ref()
+            .context("Repository not loaded. Call clone_repo or load_from_path first.")?;
+
+        info!("Diffing {} -> {}", from_rev, to_rev);
+
+        let from_tree = repo.rev_parse_single(from_rev)?.object()?.peel_to_tree()?;
+
+        let to_tree = repo.rev_parse_single(to_rev)?.object()?.peel_to_tree()?;
+
+        let mut changes_str = String::new();
+
+        from_tree
+            .changes()?
+            .for_each_to_obtain_tree(&to_tree, |change| {
+                let line = match change {
+                    Change::Modification { location, .. } => {
+                        format!("M  {}\n", location.to_str_lossy())
+                    }
+                    Change::Addition { location, .. } => {
+                        format!("A  {}\n", location.to_str_lossy())
+                    }
+                    Change::Deletion { location, .. } => {
+                        format!("D  {}\n", location.to_str_lossy())
+                    }
+                    _ => String::new(),
+                };
+                changes_str.push_str(&line);
+
+                Ok::<_, std::convert::Infallible>(Action::Continue)
+            })?;
+
+        Ok(changes_str)
     }
 }
 
-fn write_etag_to_file(path: &Path, etag: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+fn get_updated_vms(changeset: &str) -> Vec<String> {
+    let mut dirs = HashSet::new();
+
+    for line in changeset.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Expect format like: "M  vm-policies/gui-vm/rules.json"
+        // Split once on whitespace to drop the status part.
+        let mut parts = line.split_whitespace();
+
+        // First is status ("M", "A", etc.), second is the path
+        let _status = parts.next();
+        let path = match parts.next() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // We only care about paths that are within vm-policies/
+        const PREFIX: &str = "vm-policies/";
+        if !path.starts_with(PREFIX) {
+            continue;
+        }
+
+        // Take the component immediately after "vm-policies/"
+        // e.g. "vm-policies/gui-vm/rules.json" -> "gui-vm"
+        let rest = &path[PREFIX.len()..];
+        if let Some(first_component) = rest.split('/').next() {
+            if !first_component.is_empty() {
+                dirs.insert(first_component.to_string());
+            }
+        }
     }
-    fs::write(path, etag.trim())?;
+
+    // Turn into sorted Vec if you want deterministic order
+    let mut result: Vec<String> = dirs.into_iter().collect();
+    result.sort();
+    result
+}
+
+fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> anyhow::Result<()> {
+    let vm_path = vm_root.join(vm_name);
+    if !vm_path.exists() {
+        anyhow::bail!("VM directory does not exist: {}", vm_path.display());
+    }
+    /* Return if vm_root doesn't exists */
+    if !vm_root.exists() {
+        return Ok(());
+    }
+
+    let out_file_path = output_dir.join(format!("{}.tar.gz", vm_name));
+    let tar_gz = File::create(&out_file_path)?;
+    let enc = GzEncoder::new(tar_gz, Compression::default());
+    let mut tar = Builder::new(enc);
+
+    // Iterate all files recursively inside vm-policies/<vmname>
+    for entry in walkdir::WalkDir::new(&vm_path) {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path == vm_path {
+            continue; // skip the root folder itself
+        }
+
+        let relative_path = path.strip_prefix(&vm_path)?;
+
+        // Add the file to the tar with ONLY the relative path
+        tar.append_path_with_name(path, relative_path)?;
+    }
+
+    tar.finish()?;
+    println!("Created {}", out_file_path.display());
     Ok(())
 }
 
-fn load_etag_from_file(path: &Path) -> Option<String> {
-    if !path.exists() {
-        return None;
+fn ensure_policy_cache(
+    vm_root: &Path,
+    output_dir: &Path,
+    head_file_path: &Path,
+    new_head: &str,
+) -> anyhow::Result<()> {
+    if !vm_root.exists() {
+        return Ok(());
     }
 
-    match fs::read_to_string(path) {
-        Ok(s) => {
-            let trimmed = s.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        }
-        Err(e) => {
-            error!("Failed to read ETag file {}: {e}", path.display());
-            None
+    let old_head = fs::read_to_string(head_file_path)
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    if let Some(old) = &old_head {
+        if old == new_head {
+            info!("Policy cache is up-to-date.");
+            return Ok(());
         }
     }
+
+    fs::remove_dir_all(output_dir)?;
+    fs::create_dir_all(output_dir)?;
+
+    for entry in fs::read_dir(vm_root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            let vm_name = entry
+                .file_name()
+                .into_string()
+                .map_err(|os| anyhow::anyhow!("Non-UTF8 VM directory name: {:?}", os))?;
+
+            create_vm_tar(vm_root, &vm_name, output_dir)?;
+        }
+    }
+
+    let mut head_file = File::create(head_file_path)?;
+    head_file.write_all(new_head.as_bytes())?;
+    info!("Policy cache updated");
+
+    Ok(())
 }
 
-pub fn monitor_policy_url(
-    client: Client,
+fn update_vms(
     admin_service: Arc<super::server::AdminServiceImpl>,
-    policy_url: String,
-    poll_interval: Duration,
-    token_file: Option<PathBuf>,
-    on_update: NewPolicyCallback,
+    cache_dir: &Path,
+    sha: &str,
+) -> anyhow::Result<()> {
+    if !cache_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(cache_dir)? {
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let name = entry.file_name().into_string();
+        if name.ends_with(".tar.gz") {
+            let vmname = name.trim_end_matches(".tar.gz");
+            let _ = push_vm_policy_updates(admin_service.clone(), &vmname, cache_dir, "", sha, "");
+        }
+    }
+    Ok(())
+}
+
+pub fn push_vm_policy_updates(
+    admin_service: Arc<super::server::AdminServiceImpl>,
+    vm_name: &str,
+    cache_dir: &Path,
+    old_rev: &str,
+    new_rev: &str,
+    change_set: &str,
 ) {
+    let cache_dir = cache_dir.to_path_buf();
+
+    info!("Preparing policy update push for {}", vm_name);
+
+    let admin_service = admin_service.clone();
+    let vm = vm_name.clone();
+    let old = old_rev.to_string();
+    let new = new_rev.to_string();
+    let changes = change_set.to_string();
+    let policy_archive = cache_dir.join(format!("{}.tar.gz", vm_name));
+
     tokio::spawn(async move {
-        let _admin_service = admin_service;
-        let mut token = None;
-
-        if let Some(token_path) = token_file.as_ref() {
-            token = load_token_from_file(token_path);
-        }
-
-        let policy_store = Path::new(POLICY_STORE);
-        if let Err(e) = fs::create_dir_all(&policy_store) {
-            error!("Failed to create policy store directory {POLICY_STORE}: {e}",);
-            return;
-        }
-
-        let tag_file = policy_store.join("urltag.txt");
-        let mut last_tag: Option<String> = load_etag_from_file(&tag_file);
-
-        let failsleep = max(300, poll_interval.as_secs());
-        let tmp_download = match tempfile::tempdir() {
-            Ok(d) => d,
-            Err(e) => {
-                error!("Failed to create temp dir: {e}");
-                return;
-            }
-        };
-
-        loop {
-            let mut req = client.get(&policy_url);
-
-            if let Some(ref t) = token {
-                req = req.bearer_auth(t);
-            }
-
-            if let Some(tag) = last_tag.as_deref() {
-                req = req.header(reqwest::header::IF_NONE_MATCH, tag);
-            }
-
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("Policy store poll HTTP error: {e:?}");
-                    sleep(Duration::from_secs(failsleep)).await;
-                    continue;
-                }
-            };
-
-            if resp.status() == StatusCode::NOT_MODIFIED {
-                if poll_interval.as_secs() > 0 {
-                    sleep(poll_interval).await;
-                    continue;
-                }
-                break;
-            }
-
-            if !resp.status().is_success() {
-                error!("Policy store poll non-success status: {}", resp.status());
-                sleep(Duration::from_secs(failsleep)).await;
-                continue;
-            }
-
-            let new_etag = resp
-                .headers()
-                .get(reqwest::header::ETAG)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-
-            let body_bytes = match resp.bytes().await {
-                Ok(b) => b,
-                Err(e) => {
-                    error!("Failed to read policy archive: {e:?}");
-                    continue;
-                }
-            };
-
-            let archive_path = tmp_download.path().join("policy.tar.gz");
-            if let Err(e) = fs::write(&archive_path, &body_bytes) {
-                error!(
-                    "Failed to write policy archive to {}: {e}",
-                    archive_path.display()
-                );
-                continue;
-            }
-
-            if let Err(e) = on_update(&archive_path) {
-                error!("on_update callback error: {e:?}");
-            }
-
-            if let Some(ref et) = new_etag {
-                last_tag = Some(et.clone());
-                if let Err(e) = write_etag_to_file(&tag_file, et) {
-                    error!("Failed to update ETag file {}: {e}", tag_file.display());
-                }
-            }
-
-            if poll_interval.as_secs() > 0 {
-                sleep(poll_interval).await;
-            } else {
-                break;
-            }
+        if let Err(e) = admin_service
+            .push_policy_update(&vm_name, &policy_archive, &old, &new, &changes)
+            .await
+        {
+            error!("Failed to push policy update to {}: {}", vm_name, e);
+        } else {
+            info!("Successfully pushed policy update for {}", vm_name);
         }
     });
-}
-
-fn handle_new_policy(admin_service: Arc<super::server::AdminServiceImpl>) -> NewPolicyCallback {
-    Arc::new(move |source_archive: &Path| {
-        let admin_service = admin_service.clone();
-        let output_dir = Path::new(POLICY_STORE);
-
-        let tar_gz = File::open(source_archive)?;
-        let tar = GzDecoder::new(tar_gz);
-        let mut archive = Archive::new(tar);
-
-        let mut vm_archives: HashMap<String, Builder<GzEncoder<File>>> = HashMap::new();
-
-        if output_dir.exists() {
-            info!("Cleaning policy store: {}", output_dir.display());
-            fs::remove_dir_all(output_dir)?;
-        }
-        fs::create_dir_all(output_dir)?;
-
-        info!("Unpacking new policies...");
-
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let entry_path = entry.path()?.into_owned();
-
-            let components: Vec<_> = entry_path
-                .components()
-                .map(|c| c.as_os_str().to_str().unwrap())
-                .collect();
-
-            if components.len() < 2 {
-                continue;
-            }
-
-            /* We check index 1 because index 0 is the root folder name we want to discard */
-            let policy_type = components[1];
-
-            match policy_type {
-                "opa" => {
-                    /* Extract only opa directory to policy store, ignore root */
-                    let relative_path: PathBuf = components.iter().skip(1).collect();
-                    let target_path = output_dir.join(relative_path);
-
-                    if let Some(parent) = target_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    entry.unpack(&target_path)?;
-                    info!("Extracted: {:?}", target_path);
-                }
-                "vm-policies" => {
-                    /* Skip the "vm-policies" if it has no children */
-                    if components.len() < 3 {
-                        continue;
-                    }
-
-                    let vm_name = components[2];
-
-                    let builder = vm_archives.entry(vm_name.to_string()).or_insert_with(|| {
-                        let parent_path = output_dir.join("vm-policies");
-
-                        std::fs::create_dir_all(&parent_path)
-                            .expect("Failed to crstart_updatereate vm-policies dir");
-
-                        let archive_path = parent_path.join(format!("{}.tar.gz", vm_name));
-                        info!("Creating Archive: {:?}", archive_path);
-
-                        let file =
-                            File::create(archive_path).expect("Failed to create archive file");
-                        let enc = GzEncoder::new(file, Compression::default());
-                        Builder::new(enc)
-                    });
-
-                    /* Prepare header for the new archive */
-                    let mut header = entry.header().clone();
-                    let path_inside_tar: PathBuf = components.iter().skip(2).collect();
-                    builder.append_data(&mut header, path_inside_tar, &mut entry)?;
-                }
-                _ => {
-                    info!("Skipping: {:?}", entry_path);
-                }
-            }
-        }
-
-        /* archive all */
-        for (name, mut builder) in vm_archives {
-            builder.finish()?;
-            info!("Finished archive for: {}", name);
-            let admin_service = admin_service.clone();
-            let change_set = "vm-policies\nfile1\nfile2";
-            let old_rev = "0000";
-            let new_rev = "1111";
-
-            tokio::spawn(async move {
-                let archive_path = output_dir
-                    .join("vm-policies")
-                    .join(format!("{}.tar.gz", name));
-                if let Err(e) = admin_service
-                    .push_policy_update(&name, &archive_path, old_rev, new_rev, change_set)
-                    .await
-                {
-                    error!("Failed to push policy update to {}: {}", name, e);
-                }
-            });
-        }
-
-        Ok(())
-    })
 }
 
 pub async fn start_updater(
     admin_service: Arc<super::server::AdminServiceImpl>,
     policy_url: String,
     poll_interval: Duration,
-    token_file: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let client = Client::new();
+    policyroot: Option<PathBuf>,
+    branch: String,
+) -> thread::JoinHandle<()> {
+    thread::spawn(|| {
+        let policydir = policyroot.join("data").as_path();
+        let vmpolicies = policydir.join("vm-policies");
+        let policycache = policyroot.join(".cache").as_path();
+        let shafile = policycache.join("sha.txt");
 
-    info!("GGGG Policy Repo URL: {}", policy_url);
-    info!("GGGG Poll interval: {}", poll_interval.as_secs());
-    if let Some(path) = token_file.as_ref() {
-        info!("GGGG URL access token: {}", path.display());
-    }
+        let mut updater = match RepoUpdater::new(policy_url, branch, policydir) {
+            Ok(u) => u,
+            Err(e) => {
+                error!("Failed to initialize RepoUpdater: {}", e);
+                return;
+            }
+        };
 
-    let callback = handle_new_policy(admin_service.clone());
+        let head_str = updater
+            .repo_head()
+            .map(|h| h.to_string())
+            .unwrap_or_else(|| "UNKNOWN".into());
 
-    monitor_policy_url(
-        client,
-        admin_service,
-        policy_url,
-        poll_interval,
-        token_file,
-        callback,
-    );
-    Ok(())
+        info!("Current HEAD is: {}", head_str);
+
+        let _ = ensure_policy_cache(&vmpolicies, policycache, &shafile, &head_str);
+
+        loop {
+            info!("\n--- Checking for policy updates ---");
+            match updater.get_update() {
+                Ok(Some(old_head)) => {
+                    let new_head = updater.repo_head().unwrap();
+                    info!(
+                        "Policy update found! Fetched changes from {} to {}",
+                        old_head, new_head
+                    );
+
+                    match updater.get_change_set(&old_head.to_string(), &new_head.to_string()) {
+                        Ok(changes) => {
+                            if !changes.is_empty() {
+                                debug!("Changeset:\n{}", changes);
+
+                                let changed_vms = get_updated_vms(&changes);
+                                debug!("Changed vm-policies subdirs: {:?}", changed_vms);
+
+                                for vm in changed_vms {
+                                    match archive_policies_for_vm(
+                                        vmpolicies.as_path(),
+                                        &vm,
+                                        &policycache,
+                                    ) {
+                                        Ok(_) => {
+                                            info!("Created tar for {}", vm);
+                                            if let Err(e) = File::create(&shafile)
+                                                .and_then(|mut f| f.write_all(new_head.as_bytes()))
+                                            {
+                                                error!("Failed to write head to file: {}", e);
+                                            }
+                                            let _ = push_vm_policy_updates(
+                                                admin_service.clone(),
+                                                &vm,
+                                                policycache,
+                                                &old_head.to_string(),
+                                                &new_head.to_string(),
+                                                &changes,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to create tar for {}: {}", vm, e);
+                                        }
+                                    }
+                                }
+                            } else {
+                                info!(
+                                    "Update applied, but no file changes were detected in the diff."
+                                );
+                            }
+                        }
+                        Err(e) => error!("Failed to compute change set: {}", e),
+                    }
+                }
+                Ok(None) => info!("Repository is already up-to-date."),
+                Err(e) => error!("An error occurred during pull: {}", e),
+            }
+            thread::sleep(poll_interval);
+        }
+    })
 }

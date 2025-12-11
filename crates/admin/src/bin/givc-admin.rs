@@ -96,19 +96,18 @@ async fn main() -> anyhow::Result<()> {
             .policy_url
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let token_file = cli.policy_access_token;
+        let _ = cli.policy_access_token;
         let duration = cli
             .policy_update_interval
             .map(|p| std::time::Duration::from_secs(p.to_string().parse().unwrap()))
             .unwrap_or_default();
-        admin::policy_updater::start_updater(
+        let th_handle = admin::policy_updater::start_updater(
             admin_service.clone_inner(),
             policy_url,
             duration,
-            token_file,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+            "/etc/policies",
+            "test_policy".to_string(),
+        );
     }
     info!("GGGGG givc-adminnnnnnnnnnnnn.");
     builder
@@ -116,5 +115,7 @@ async fn main() -> anyhow::Result<()> {
         .add_service(admin_service_svc)
         .serve_with_incoming(listener)
         .await?;
+    /* Cleanup */
+    th_handle.abort();
     Ok(())
 }
