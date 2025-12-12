@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     givc::trace_init()?;
 
     let cli = Cli::parse();
-    debug!("CLI is {:#?}", cli);
+    info!("CLI is {:#?}", cli);
 
     let mut builder = Server::builder();
 
@@ -104,15 +104,20 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
+    info!("POLICY  agents starting....");
 
-    let th_handle = Some(admin::policy_updater::update_policies(
-        admin_service.clone_inner(),
-        cli.policy_updater,
-        policy_url,
-        duration,
-        Path::new("/etc/policies"),
-        branch,
-    ));
+    let th_handle = Some(
+        admin::policy_updater::update_policies(
+            admin_service.clone_inner(),
+            cli.policy_updater,
+            policy_url,
+            duration,
+            Path::new("/etc/policies"),
+            branch,
+        )
+        .await,
+    );
+    info!("POLICY  agents started....");
 
     let _ = builder
         .add_service(reflect)
@@ -121,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     /* Cleanup */
     match th_handle {
-        Some(handle) => handle.await.join().unwrap(),
+        Some(handle) => handle.join().unwrap(),
         None => (),
     }
     Ok(())

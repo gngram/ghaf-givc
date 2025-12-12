@@ -73,7 +73,7 @@ impl RepoUpdater {
 
                     if remote_url == updater.url {
                         info!(
-                            "Successfully loaded existing repository from '{}'",
+                            "[POLICY] Successfully loaded existing repository from '{}'",
                             updater.destination.display()
                         );
                         let head = repo.head_id()?;
@@ -82,14 +82,14 @@ impl RepoUpdater {
                         return Ok(updater);
                     } else {
                         info!(
-                            "Repository at '{}' is not from provided source. Re-cloning...",
+                            "[POLICY] Repository at '{}' is not from provided source. Re-cloning...",
                             updater.destination.display()
                         );
                     }
                 }
                 Err(_) => {
                     info!(
-                        "Path '{}' exists but is not a valid git repository. Re-cloning...",
+                        "[POLICY] Path '{}' exists but is not a valid git repository. Re-cloning...",
                         updater.destination.display()
                     );
                 }
@@ -109,9 +109,9 @@ impl RepoUpdater {
     }
 
     fn clone_repo(&mut self) -> Result<()> {
-        info!("Cloning repository from: {}", self.url);
-        info!("Branch: {}", self.branch);
-        info!("Destination: {:?}", self.destination);
+        info!("[POLICY] Cloning repository from: {}", self.url);
+        info!("[POLICY] Branch: {}", self.branch);
+        info!("[POLICY] Destination: {:?}", self.destination);
 
         let interrupt = &gix::interrupt::IS_INTERRUPTED;
 
@@ -128,8 +128,11 @@ impl RepoUpdater {
         self.repo_head = Some(head.detach());
         self.repo = Some(repo);
 
-        info!("Repository cloned successfully.");
-        info!("Checked out HEAD: {}", self.repo_head.as_ref().unwrap());
+        info!("[POLICY] Repository cloned successfully.");
+        info!(
+            "[POLICY] Checked out HEAD: {}",
+            self.repo_head.as_ref().unwrap()
+        );
         Ok(())
     }
 
@@ -193,7 +196,7 @@ impl RepoUpdater {
         gix::worktree::state::checkout(
             &mut index,
             repo.workdir()
-                .context("Repository has no working directory")?,
+                .context("[POLICY] Repository has no working directory")?,
             objects,
             &gix::progress::Discard,
             &gix::progress::Discard,
@@ -206,12 +209,13 @@ impl RepoUpdater {
 
         // Update repo_head to the new commit
         self.repo_head = Some(commit_id);
-        info!("Checked out HEAD: {}", commit_id);
+        info!("[POLICY] Checked out HEAD: {}", commit_id);
         Ok(())
     }
 
     pub fn get_update(&mut self) -> Result<Option<gix::hash::ObjectId>> {
         if self.repo.is_none() {
+            info!("[POLICY] Repo not valid, cloning..");
             self.clone_repo()?;
         }
         // Store the old head for comparison
@@ -220,7 +224,10 @@ impl RepoUpdater {
         self.fetch()?;
 
         let commit_id = {
-            let repo = self.repo.as_ref().context("Repo should be initialized")?;
+            let repo = self
+                .repo
+                .as_ref()
+                .context("[POLICY] Repo should be initialized")?;
             let remote_tracking = format!("refs/remotes/{}/{}", self.remote_name, self.branch);
             let remote_ref = repo.find_reference(&remote_tracking)?;
             remote_ref.id().detach()
@@ -240,9 +247,9 @@ impl RepoUpdater {
         let repo = self
             .repo
             .as_ref()
-            .context("Repository not loaded. Call clone_repo or load_from_path first.")?;
+            .context("[POLICY] Repository not loaded. Call clone_repo or load_from_path first.")?;
 
-        info!("Diffing {} -> {}", from_rev, to_rev);
+        info!("[POLICY] Diffing {} -> {}", from_rev, to_rev);
 
         let from_tree = repo.rev_parse_single(from_rev)?.object()?.peel_to_tree()?;
 
@@ -319,7 +326,10 @@ fn get_updated_vms(changeset: &str) -> Vec<String> {
 fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> anyhow::Result<()> {
     let vm_path = vm_root.join(vm_name);
     if !vm_path.exists() {
-        anyhow::bail!("VM directory does not exist: {}", vm_path.display());
+        anyhow::bail!(
+            "[POLICY] VM directory does not exist: {}",
+            vm_path.display()
+        );
     }
     /* Return if vm_root doesn't exists */
     if !vm_root.exists() {
@@ -347,7 +357,7 @@ fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> 
     }
 
     tar.finish()?;
-    println!("Created {}", out_file_path.display());
+    println!("[POLICY] Created {}", out_file_path.display());
     Ok(())
 }
 
@@ -367,7 +377,7 @@ fn ensure_policy_cache(
 
     if let Some(old) = &old_head {
         if old == new_head {
-            info!("Policy cache is up-to-date.");
+            info!("[POLICY] Policy cache is up-to-date.");
             return Ok(());
         }
     }
@@ -391,7 +401,7 @@ fn ensure_policy_cache(
 
     let mut head_file = fs::File::create(head_file_path)?;
     head_file.write_all(new_head.as_bytes())?;
-    info!("Policy cache updated");
+    info!("[POLICY] Policy cache updated");
 
     Ok(())
 }
@@ -436,7 +446,7 @@ pub fn push_vm_policy_updates(
 ) {
     let cache_dir = cache_dir.to_path_buf();
 
-    info!("Preparing policy update push for {}", vm_name);
+    info!("[POLICY] Preparing policy update push for {}", vm_name);
 
     let admin_service = admin_service.clone();
     let old = old_rev.to_string();
@@ -450,9 +460,12 @@ pub fn push_vm_policy_updates(
             .push_policy_update(&vm_name, &policy_archive, &old, &new, &changes)
             .await
         {
-            error!("Failed to push policy update to {}: {}", vm_name, e);
+            error!(
+                "[POLICY] Failed to push policy update to {}: {}",
+                vm_name, e
+            );
         } else {
-            info!("Successfully pushed policy update for {}", vm_name);
+            info!("[POLICY] Successfully pushed policy update for {}", vm_name);
         }
     });
 }
@@ -466,7 +479,7 @@ pub async fn update_policies(
     branch: String,
 ) -> thread::JoinHandle<()> {
     let policyroot = policyroot.to_path_buf();
-
+    info!("POLICY_AGENT---spawning...");
     thread::spawn(move || {
         let prbinding = policyroot.join("data");
         let policydir = prbinding.as_path();
@@ -479,7 +492,7 @@ pub async fn update_policies(
         let mut updater = match RepoUpdater::new(policy_url, branch, policydir) {
             Ok(u) => u,
             Err(e) => {
-                error!("Failed to initialize RepoUpdater: {}", e);
+                error!("[POLICY] Failed to initialize RepoUpdater: {}", e);
                 return;
             }
         };
@@ -489,12 +502,12 @@ pub async fn update_policies(
             .map(|h| h.to_string())
             .unwrap_or_else(|| "UNKNOWN".into());
 
-        info!("Current HEAD is: {}", head_str);
+        info!("[POLICY] Current HEAD is: {}", head_str);
 
         let _ = ensure_policy_cache(&vmpolicies, policycache, &shafile, &head_str);
         //let _ = update_vms(admin_service.clone(), policycache, &head_str).unwrap();
         if !live_update {
-            info!("Policy LIVE update is disabled.");
+            info!("[POLICY] Policy LIVE update is disabled.");
             return;
         }
         let wait_time = if poll_interval == Duration::ZERO {
@@ -504,22 +517,22 @@ pub async fn update_policies(
         };
 
         loop {
-            info!("\n--- Checking for policy updates ---");
+            info!("\n[POLICY] --- Checking for policy updates ---");
             match updater.get_update() {
                 Ok(Some(old_head)) => {
                     let new_head = updater.repo_head().unwrap();
                     info!(
-                        "Policy update found! Fetched changes from {} to {}",
+                        "[POLICY] Policy update found! Fetched changes from {} to {}",
                         old_head, new_head
                     );
 
                     match updater.get_change_set(&old_head.to_string(), &new_head.to_string()) {
                         Ok(changes) => {
                             if !changes.is_empty() {
-                                debug!("Changeset:\n{}", changes);
+                                debug!("[POLICY] Changeset:\n{}", changes);
 
                                 let changed_vms = get_updated_vms(&changes);
-                                debug!("Changed vm-policies subdirs: {:?}", changed_vms);
+                                debug!("[POLICY] Changed vm-policies subdirs: {:?}", changed_vms);
 
                                 for vm in changed_vms {
                                     match archive_policies_for_vm(
@@ -528,11 +541,14 @@ pub async fn update_policies(
                                         &policycache,
                                     ) {
                                         Ok(_) => {
-                                            info!("Created tar for {}", vm);
+                                            info!("[POLICY] Created tar for {}", vm);
                                             if let Err(e) = fs::File::create(&shafile)
                                                 .and_then(|mut f| f.write_all(new_head.as_bytes()))
                                             {
-                                                error!("Failed to write head to file: {}", e);
+                                                error!(
+                                                    "[POLICY] Failed to write head to file: {}",
+                                                    e
+                                                );
                                             }
                                             push_vm_policy_updates(
                                                 admin_service.clone(),
@@ -547,21 +563,24 @@ pub async fn update_policies(
                                             }
                                         }
                                         Err(e) => {
-                                            error!("Failed to create tar for {}: {}", vm, e);
+                                            error!(
+                                                "[POLICY] Failed to create tar for {}: {}",
+                                                vm, e
+                                            );
                                         }
                                     }
                                 }
                             } else {
                                 info!(
-                                    "Update applied, but no file changes were detected in the diff."
+                                    "[POLICY] Update applied, but no file changes were detected in the diff."
                                 );
                             }
                         }
-                        Err(e) => error!("Failed to compute change set: {}", e),
+                        Err(e) => error!("[POLICY] Failed to compute change set: {}", e),
                     }
                 }
-                Ok(None) => info!("Repository is already up-to-date."),
-                Err(e) => error!("An error occurred during pull: {}", e),
+                Ok(None) => info!("[POLICY] Repository is already up-to-date."),
+                Err(e) => error!("[POLICY] An error occurred during pull: {}", e),
             }
             thread::sleep(wait_time);
         }
