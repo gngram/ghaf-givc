@@ -131,24 +131,25 @@ in
       opa = {
         enable = mkEnableOption "Start open policy agent service.";
       };
-      src = mkOption {
-        description = "Policy source path";
-        type = types.nullOr types.path;
-        default = null;
+      url = mkOption {
+        type = types.str;
+        description = "URL of policy store";
+      };
+      rev = mkOption {
+        type = types.str;
+        description = "Rev of the default policy";
+      };
+      sha256 = mkOption {
+        type = types.str;
+        description = "SHA of the default policy";
       };
       updater = {
         enable = mkEnableOption "Enable policy updater.";
-        url = mkOption {
+        ref = mkOption {
           type = types.str;
-          description = "URL of policy store";
-          #default = "https://github.com/gngram/policy-store/archive/refs/heads/main.zip";
+          description = "Tip(branch) of policy store to monitor for update. Default Rev must be predecessor of this.";
+          default = "main";
         };
-        accessToken = mkOption {
-          type = types.nullOr types.str;
-          description = "Access token of policy url";
-          default = null;
-        };
-
         interval = mkOption {
           type = types.int;
           default = 0;
@@ -197,15 +198,6 @@ in
       wantedBy = [ "multi-user.target" ];
     };
 
-    environment.etc = {
-      "policy/access-token" = mkIf (updatercfg.enable && updatercfg.accessToken != null) {
-        text = updatercfg.accessToken;
-        mode = "0400";
-        user = "root";
-        group = "root";
-      };
-    };
-
     systemd.services.givc-admin =
       let
         args = concatStringsSep " " (
@@ -213,6 +205,14 @@ in
           ++ (map (addr: "--listen ${addr.addr}") unixAddresses)
           ++ (map (addr: "--listen vsock:${addr.addr}:${addr.port}") vsockAddresses)
         );
+
+        defaultPolicySrc = pkgs.fetchgit {
+          inherit (cfg.policy) url;
+          inherit (cfg.policy) rev;
+          inherit (cfg.policy) sha256;
+          leaveDotGit = true;
+        };
+
         preStartScript = pkgs.writeScript "policy_init" ''
           #!${pkgs.bash}/bin/bash
           policyDir=/etc/policies
@@ -220,8 +220,10 @@ in
             install -d -m 0755 -o root -g root "$policyDir/.cache"
           fi
           if [ ! -d "$policyDir/data" ]; then
-            cp -r ${config.givc.admin.policy.src} $policyDir/data
-            chown -R ${opaUser}:${opaUser} ${opaPolicyDir}
+            cp -r ${defaultPolicySrc} $policyDir/data
+            if [ -d "${opaPolicyDir}" ]; then
+              chown -R ${opaUser}:${opaUser} ${opaPolicyDir}
+            fi
           fi
           rm -rf $policyDir/.cache/*
           if [ "$policyDir/data/vm-policies" ]; then
@@ -237,14 +239,8 @@ in
                   -C $policyDir/data/vm-policies "$vm_name"
               fi
             done
+            echo "${cfg.policy.rev}" > $policyDir/.cache/.rev
           fi
-          echo "TTTTTTTTTTTTTT"
-          ls -al $policyDir
-          echo "JJJJJJJJJJJJJJJJJJJJ"
-          ls -al $policyDir/data
-          echo "JJJJJJJJJJJJJJJJXXX"
-          ls -al $policyDir/.cache
-
         '';
       in
       {
@@ -259,7 +255,7 @@ in
           Restart = "on-failure";
           TimeoutStopSec = 5;
           RestartSec = 1;
-          ExecStartPre = lib.optional (cfg.policy.src != null) "!${preStartScript}";
+          ExecStartPre = "!${preStartScript}";
         };
         path = [
           pkgs.gzip
@@ -271,6 +267,9 @@ in
           "TLS" = "${trivial.boolToString cfg.tls.enable}";
           "SERVICES" = "${concatStringsSep " " cfg.services}";
           "POLICY_UPDATER" = "${trivial.boolToString updatercfg.enable}";
+          "POLICY_URL" = "${cfg.policy.url}";
+          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
+          "POLICY_UPDATE_REF" = "${updatercfg.ref}";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";
@@ -280,11 +279,6 @@ in
         // attrsets.optionalAttrs cfg.debug {
           "RUST_BACKTRACE" = "1";
           "GIVC_LOG" = "givc=debug,info";
-        }
-        // attrsets.optionalAttrs updatercfg.enable {
-          "POLICY_URL" = "${updatercfg.url}";
-          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
-          "POLICY_URL_ACCESS_TOKEN" = "/etc/policy/access-token";
         };
       };
 

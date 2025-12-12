@@ -13,10 +13,10 @@ use async_stream::try_stream;
 use futures_util::stream::StreamExt;
 use givc_common::query::Event;
 use regex::Regex;
+use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio_stream::iter;
 use tonic::{Code, Response, Status};
 use tracing::{debug, error, info};
 
@@ -192,7 +192,6 @@ impl AdminServiceImpl {
         query: &str,
         policy_path: &str,
     ) -> anyhow::Result<String> {
-        // Test code: self.push_policy_update("app-vm", "policy OOPPAA".to_string()).await?;
         let result = self
             .policy_server
             .evaluate_query(query, policy_path)
@@ -228,8 +227,8 @@ impl AdminServiceImpl {
         let change_set = change_set.to_string();
 
         let updates = stream.map(move |chunk| {
-            let chunk = chunk.unwrap(); // ReaderStream doesn't error on file reads
-            info!("CCCCCChunk Size: {} bytes", chunk.len());
+            let chunk = chunk.unwrap();
+            debug!("Policy Chunk Size: {} bytes", chunk.len());
             pb::policyagent::StreamPolicyRequest {
                 archive_chunk: chunk.into(),
                 old_rev: old_rev.clone(),
@@ -548,18 +547,21 @@ impl pb::admin_service_server::AdminService for AdminService {
             let locale_assigns = self.inner.locale_assigns.lock().await.clone();
             let timezone = self.inner.timezone.lock().await.clone();
             tokio::spawn(async move {
-                // `async move` captures `inner_clone`
                 if let Ok(conn) = endpoint.connect().await {
-                    // Check if the policy archive exists and push it
                     if tokio::fs::metadata(&policy_cache_path).await.is_ok() {
-                        // Use inner_clone
+                        /* Read the cached policy rev in a string */
+                        let rev_file = std::path::PathBuf::from("/etc/policies/.cache/.rev");
+                        let policy_rev = fs::read_to_string(rev_file)
+                            .ok()
+                            .map(|s| s.trim().to_string());
+
                         if let Err(e) = inner_clone
                             .push_policy_update(
                                 &vm_name,
                                 &policy_cache_path,
-                                "CCCC".to_string().as_str(),
-                                "BBBB".to_string().as_str(),
-                                "AAAA".to_string().as_str(),
+                                "",
+                                policy_rev.as_deref().unwrap_or(""),
+                                "",
                             )
                             .await
                         {
@@ -568,24 +570,6 @@ impl pb::admin_service_server::AdminService for AdminService {
                     } else {
                         debug!("No cached policy archive found for {}", vm_name);
                     }
-                    /*
-                    // Send policy stream on registration
-                    let policy_client = PolicyAgentClient::new(endpoint.clone());
-
-                    let updates = iter(vec![
-                        pb::policyagent::PolicyUpdate {
-                            message: "hello world,".to_string(),
-                        },
-                        pb::policyagent::PolicyUpdate {
-                            message: "I am good to go".to_string(),
-                        },
-                    ]);
-
-                    if let Err(e) = policy_client.stream_policy(updates).await {
-                        error!("Failed to send policy stream to {}: {}", name, e);
-                    }
-                    */
-
                     let mut client =
                         pb::locale::locale_client_client::LocaleClientClient::new(conn);
                     let localemsg = pb::locale::LocaleMessage {

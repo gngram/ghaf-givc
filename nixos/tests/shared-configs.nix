@@ -36,7 +36,7 @@ in
       virtualisation.writableStoreUseTmpfs = true;
     };
     tests-adminvm =
-      { pkgs, ... }:
+      { ... }:
       {
         imports = [
           self.nixosModules.admin
@@ -61,16 +61,13 @@ in
           inherit (adminConfig) name;
           inherit (adminConfig) addresses;
           tls.enable = tls;
-          policy.opa.enable = true;
-          policy.src = pkgs.fetchFromGitHub {
-            owner = "gngram";
-            repo = "policy-store";
-            rev = "test_policy";
-            sha256 = "sha256-PnObPSCHDejagXGAwzGJAKKUI+KLyBETPbBUtcaJeeY=";
+          policy = {
+            url = "http://github.com/gngram/policy-store.git";
+            rev = "fb72918b7f4b919630703f281592d699e15cc9e5";
+            sha256 = "sha256-fe2j48OB4yRS5mSbGNuil04O6YxSVlWEhS/Vl+S5DaE=";
+            opa.enable = true;
+            updater.enable = false;
           };
-          policy.updater.enable = false;
-          policy.updater.url = "http://github.com/gngram/policy-store/archive/refs/heads/test_policy.tar.gz";
-          policy.updater.interval = 0;
         };
       };
     tests-hostvm = {

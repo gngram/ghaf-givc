@@ -1,24 +1,20 @@
-use std::cmp::max;
-use std::collections::HashMap;
-use std::fs::{self, File};
+use std::collections::HashSet;
+use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
-use flate2::Compression;
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use reqwest::{Client, StatusCode};
-use tar::{Archive, Builder};
-use tokio::time::sleep;
-use tracing::{error, info};
-
 use anyhow::{Context, Result};
+use flate2::Compression;
+use flate2::write::GzEncoder;
+use tar::Builder;
+use tracing::{debug, error, info};
+
 use gix;
 use gix::bstr::ByteSlice;
 use gix::object::tree::diff::{Action, Change};
-use std::path::PathBuf;
-use tracing::info;
 
 /* RepoUpdater structure */
 pub struct RepoUpdater {
@@ -331,7 +327,7 @@ fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> 
     }
 
     let out_file_path = output_dir.join(format!("{}.tar.gz", vm_name));
-    let tar_gz = File::create(&out_file_path)?;
+    let tar_gz = fs::File::create(&out_file_path)?;
     let enc = GzEncoder::new(tar_gz, Compression::default());
     let mut tar = Builder::new(enc);
 
@@ -389,17 +385,18 @@ fn ensure_policy_cache(
                 .into_string()
                 .map_err(|os| anyhow::anyhow!("Non-UTF8 VM directory name: {:?}", os))?;
 
-            create_vm_tar(vm_root, &vm_name, output_dir)?;
+            archive_policies_for_vm(vm_root, &vm_name, output_dir)?;
         }
     }
 
-    let mut head_file = File::create(head_file_path)?;
+    let mut head_file = fs::File::create(head_file_path)?;
     head_file.write_all(new_head.as_bytes())?;
     info!("Policy cache updated");
 
     Ok(())
 }
 
+#[allow(unused)]
 fn update_vms(
     admin_service: Arc<super::server::AdminServiceImpl>,
     cache_dir: &Path,
@@ -410,15 +407,20 @@ fn update_vms(
     }
 
     for entry in fs::read_dir(cache_dir)? {
+        let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() {
-            continue;
-        }
 
-        let name = entry.file_name().into_string();
-        if name.ends_with(".tar.gz") {
-            let vmname = name.trim_end_matches(".tar.gz");
-            let _ = push_vm_policy_updates(admin_service.clone(), &vmname, cache_dir, "", sha, "");
+        if file_type.is_dir() {
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|os| anyhow::anyhow!("Non-UTF8 VM directory name: {:?}", os))?;
+
+            if name.ends_with(".tar.gz") {
+                let vmname = name.trim_end_matches(".tar.gz");
+                let _ =
+                    push_vm_policy_updates(admin_service.clone(), &vmname, cache_dir, "", sha, "");
+            }
         }
     }
     Ok(())
@@ -437,11 +439,11 @@ pub fn push_vm_policy_updates(
     info!("Preparing policy update push for {}", vm_name);
 
     let admin_service = admin_service.clone();
-    let vm = vm_name.clone();
     let old = old_rev.to_string();
     let new = new_rev.to_string();
     let changes = change_set.to_string();
     let policy_archive = cache_dir.join(format!("{}.tar.gz", vm_name));
+    let vm_name = vm_name.to_string();
 
     tokio::spawn(async move {
         if let Err(e) = admin_service
@@ -455,18 +457,24 @@ pub fn push_vm_policy_updates(
     });
 }
 
-pub async fn start_updater(
+pub async fn update_policies(
     admin_service: Arc<super::server::AdminServiceImpl>,
+    live_update: bool,
     policy_url: String,
     poll_interval: Duration,
-    policyroot: Option<PathBuf>,
+    policyroot: &Path,
     branch: String,
 ) -> thread::JoinHandle<()> {
-    thread::spawn(|| {
-        let policydir = policyroot.join("data").as_path();
+    let policyroot = policyroot.to_path_buf();
+
+    thread::spawn(move || {
+        let prbinding = policyroot.join("data");
+        let policydir = prbinding.as_path();
         let vmpolicies = policydir.join("vm-policies");
-        let policycache = policyroot.join(".cache").as_path();
-        let shafile = policycache.join("sha.txt");
+        let pcbinding = policyroot.join(".cache");
+        let policycache = pcbinding.as_path();
+        let shafile = policycache.join(".rev");
+        let admin_service = admin_service.clone();
 
         let mut updater = match RepoUpdater::new(policy_url, branch, policydir) {
             Ok(u) => u,
@@ -484,6 +492,16 @@ pub async fn start_updater(
         info!("Current HEAD is: {}", head_str);
 
         let _ = ensure_policy_cache(&vmpolicies, policycache, &shafile, &head_str);
+        //let _ = update_vms(admin_service.clone(), policycache, &head_str).unwrap();
+        if !live_update {
+            info!("Policy LIVE update is disabled.");
+            return;
+        }
+        let wait_time = if poll_interval == Duration::ZERO {
+            Duration::from_secs(300)
+        } else {
+            poll_interval
+        };
 
         loop {
             info!("\n--- Checking for policy updates ---");
@@ -511,12 +529,12 @@ pub async fn start_updater(
                                     ) {
                                         Ok(_) => {
                                             info!("Created tar for {}", vm);
-                                            if let Err(e) = File::create(&shafile)
+                                            if let Err(e) = fs::File::create(&shafile)
                                                 .and_then(|mut f| f.write_all(new_head.as_bytes()))
                                             {
                                                 error!("Failed to write head to file: {}", e);
                                             }
-                                            let _ = push_vm_policy_updates(
+                                            push_vm_policy_updates(
                                                 admin_service.clone(),
                                                 &vm,
                                                 policycache,
@@ -524,6 +542,9 @@ pub async fn start_updater(
                                                 &new_head.to_string(),
                                                 &changes,
                                             );
+                                            if poll_interval == Duration::ZERO {
+                                                break;
+                                            }
                                         }
                                         Err(e) => {
                                             error!("Failed to create tar for {}: {}", vm, e);
@@ -542,7 +563,7 @@ pub async fn start_updater(
                 Ok(None) => info!("Repository is already up-to-date."),
                 Err(e) => error!("An error occurred during pull: {}", e),
             }
-            thread::sleep(poll_interval);
+            thread::sleep(wait_time);
         }
     })
 }

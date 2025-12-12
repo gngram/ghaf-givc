@@ -3,6 +3,7 @@ use clap::Parser;
 use givc::admin;
 use givc::endpoint::TlsConfig;
 use givc_common::pb::reflection::ADMIN_DESCRIPTOR;
+use std::path::Path;
 use std::path::PathBuf;
 use tonic::transport::Server;
 use tracing::{debug, info};
@@ -38,11 +39,11 @@ struct Cli {
     #[arg(long, env = "POLICY_URL")]
     policy_url: Option<PathBuf>,
 
+    #[arg(long, env = "POLICY_UPDATE_REF")]
+    policy_ref: Option<PathBuf>,
+
     #[arg(long, env = "POLICY_UPDATE_INTERVAL")]
     policy_update_interval: Option<String>,
-
-    #[arg(long, env = "POLICY_URL_ACCESS_TOKEN")]
-    policy_access_token: Option<PathBuf>,
 
     #[arg(
         long,
@@ -87,35 +88,41 @@ async fn main() -> anyhow::Result<()> {
     let sys_opts = tokio_listener::SystemOptions::default();
     let user_opts = tokio_listener::UserOptions::default();
 
-    info!("GGGGG givc-admin.{}", cli.policy_updater);
     let listener =
         tokio_listener::Listener::bind_multiple(&cli.listen, &sys_opts, &user_opts).await?;
 
-    if (cli.policy_updater) {
-        let policy_url = cli
-            .policy_url
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let _ = cli.policy_access_token;
-        let duration = cli
-            .policy_update_interval
-            .map(|p| std::time::Duration::from_secs(p.to_string().parse().unwrap()))
-            .unwrap_or_default();
-        let th_handle = admin::policy_updater::start_updater(
-            admin_service.clone_inner(),
-            policy_url,
-            duration,
-            "/etc/policies",
-            "test_policy".to_string(),
-        );
-    }
-    info!("GGGGG givc-adminnnnnnnnnnnnn.");
-    builder
+    let policy_url = cli
+        .policy_url
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let duration = cli
+        .policy_update_interval
+        .map(|p| std::time::Duration::from_secs(p.to_string().parse().unwrap()))
+        .unwrap_or_default();
+    let branch = cli
+        .policy_ref
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let th_handle = Some(admin::policy_updater::update_policies(
+        admin_service.clone_inner(),
+        cli.policy_updater,
+        policy_url,
+        duration,
+        Path::new("/etc/policies"),
+        branch,
+    ));
+
+    let _ = builder
         .add_service(reflect)
         .add_service(admin_service_svc)
         .serve_with_incoming(listener)
         .await?;
     /* Cleanup */
-    th_handle.abort();
+    match th_handle {
+        Some(handle) => handle.await.join().unwrap(),
+        None => (),
+    }
     Ok(())
 }

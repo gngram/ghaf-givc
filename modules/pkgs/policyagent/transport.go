@@ -6,15 +6,21 @@ package policyagent
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	pb "givc/modules/api/policyagent"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
+
+type ActionMap map[string]string
 
 type PolicyAgentServer struct {
 	pb.UnimplementedPolicyAgentServer
@@ -76,19 +82,63 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 			newRev = val
 		}
 	}
-
+	if newRev == "" {
+		log.Errorf("Spurious policy received")
+		return stream.SendAndClose(&pb.Status{Status: "FAILED"})
+	}
 	log.Infof("Policy update info: ChangeSet=%s OldRev=%s NewRev=%s, Size:%d bytes", changeSet, oldRev, newRev)
 
-	// Close the temporary file
 	tempFile.Close()
 
-	// Now, extract the tar.gz file
-	destDir := "/etc/policies"
-	log.Infof("Extracting policy archive %s to %s", tempFile.Name(), destDir)
+	policyBaseDir := "/etc/policies"
+	actionFile := filepath.Join(policyBaseDir, "update_actions.json")
+	/* TODO: disabled for debugging
+	if !FileExists(actionFile) {
+		log.Infof("Policy update ignored, policy install rules not found.")
+		return stream.SendAndClose(&pb.Status{Status: "OK"})
+	}
+	*/
+	vmPolicyDir := filepath.Join(policyBaseDir, "vm-policies")
+	revFile := filepath.Join(policyBaseDir, ".rev")
 
-	if err := extractTarGz(tempFile.Name(), destDir); err != nil {
-		log.Errorf("Failed to extract policy archive: %v", err)
-		return err
+	extractPolicy := false
+	if GetFileSize(tempFile.Name()) > 0 {
+		if FileExists(revFile) {
+			sha, _ := os.ReadFile(revFile)
+			if string(sha) != newRev {
+				extractPolicy = true
+			}
+		} else {
+			extractPolicy = true
+		}
+	}
+
+	if extractPolicy {
+		log.Infof("Extracting policy archive %s to %s", tempFile.Name(), vmPolicyDir)
+		if err := extractTarGz(tempFile.Name(), vmPolicyDir); err != nil {
+			log.Errorf("Failed to extract policy archive: %v", err)
+			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
+		}
+		err := os.WriteFile(revFile, []byte(newRev), 0644)
+		if err != nil {
+			log.Errorf("Failed to write to sha file: %v", err)
+			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
+		}
+
+		/* TODO: Remove after debug */
+		if !FileExists(actionFile) {
+			log.Infof("Policy update ignored, policy install rules not found.")
+			return stream.SendAndClose(&pb.Status{Status: "OK"})
+		}
+
+		installRules, err := LoadActionMap(actionFile)
+		if err != nil {
+			log.Errorf("Error loading install rules: %v", err)
+		}
+		if err := ProcessChangeset(changeSet, vmPolicyDir, installRules); err != nil {
+			log.Errorf("error processing changeset: %v", err)
+		}
+
 	}
 
 	log.Infof("Successfully extracted policies.")
@@ -144,4 +194,134 @@ func extractTarGz(tarGzPath string, destDir string) error {
 		}
 	}
 	return nil
+}
+
+func LoadActionMap(jsonPath string) (ActionMap, error) {
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading action json: %w", err)
+	}
+	var m ActionMap
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("unmarshal action json: %w", err)
+	}
+	return m, nil
+}
+
+func ProcessChangeset(changeset, policyDir string, actions ActionMap) error {
+	trimmed := strings.TrimSpace(changeset)
+
+	/* No changeset defined */
+	if trimmed == "" {
+		return installAllPolicies(policyDir, actions)
+	}
+
+	names := getModifiedPolicies(changeset, "vm-policies")
+	if len(names) == 0 {
+		return nil
+	}
+
+	for name := range names {
+		action, ok := actions[name]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "no action found for %q, skipping\n", name)
+			continue
+		}
+		targetPath := filepath.Join(policyDir, name)
+		if err := installPolicy(action, targetPath); err != nil {
+			return fmt.Errorf("running action for %q: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+func getModifiedPolicies(changeset, root string) map[string]struct{} {
+	result := make(map[string]struct{})
+	lines := strings.Split(changeset, "\n")
+
+	prefix := root + "/"
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Expect format: "<status> <path>" e.g. "M vm-policies/hello.txt"
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		path := parts[1]
+
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+
+		// Strip "vm-policies/"
+		rel := strings.TrimPrefix(path, prefix)
+		if rel == "" {
+			continue
+		}
+
+		// Take only the first path component: no recursion
+		top := strings.SplitN(rel, "/", 2)[0]
+		if top != "" {
+			result[top] = struct{}{}
+		}
+	}
+
+	return result
+}
+
+func installAllPolicies(policyDir string, actions ActionMap) error {
+	for name, action := range actions {
+		targetPath := filepath.Join(policyDir, name)
+		if _, err := os.Stat(targetPath); err != nil {
+			// doesn't exist, skip
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %q: %w", targetPath, err)
+		}
+
+		if err := installPolicy(action, targetPath); err != nil {
+			return fmt.Errorf("running action for %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func installPolicy(action, targetPath string) error {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return fmt.Errorf("empty action command")
+	}
+
+	parts := strings.Fields(action)
+	cmdName := parts[0]
+	args := append(parts[1:], targetPath)
+
+	cmd := exec.Command(cmdName, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func FileExists(path string) bool {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true
+	}
+	return !os.IsNotExist(err)
+}
+
+func GetFileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
