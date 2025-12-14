@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::lchown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -94,17 +95,17 @@ impl RepoUpdater {
                     );
                 }
             }
-
-            /* Clean up invalid directory (if exists) before cloning */
-            std::fs::remove_dir_all(&updater.destination).with_context(|| {
-                format!(
-                    "Failed to delete directory '{}'",
-                    updater.destination.display()
-                )
-            })?;
         }
 
-        updater.clone_repo()?;
+        loop {
+            match updater.clone_repo() {
+                Ok(()) => break,
+                Err(e) => {
+                    error!("[POLICY] Clone failed: {}. Retrying in 5 mins...", e);
+                    thread::sleep(Duration::from_secs(300));
+                }
+            }
+        }
         Ok(updater)
     }
 
@@ -113,9 +114,20 @@ impl RepoUpdater {
         info!("[POLICY] Branch: {}", self.branch);
         info!("[POLICY] Destination: {:?}", self.destination);
 
+        let temp_destination = self.destination.with_extension("tmp");
+
+        if temp_destination.exists() {
+            std::fs::remove_dir_all(&temp_destination).with_context(|| {
+                format!(
+                    "Failed to delete temporary directory '{}'",
+                    temp_destination.display()
+                )
+            })?;
+        }
+
         let interrupt = &gix::interrupt::IS_INTERRUPTED;
 
-        let mut prepare = gix::prepare_clone(self.url.as_str(), &self.destination)?
+        let mut prepare = gix::prepare_clone(self.url.as_str(), &temp_destination)?
             .with_ref_name(Some(self.branch.as_str()))?;
 
         let (mut checkout, _fetch_outcome) =
@@ -123,6 +135,28 @@ impl RepoUpdater {
 
         let (repo, _checkout_outcome) =
             checkout.main_worktree(gix::progress::Discard, interrupt)?;
+
+        drop(repo);
+
+        if self.destination.exists() {
+            std::fs::remove_dir_all(&self.destination)
+                .context("Failed to remove existing destination")?;
+        }
+
+        std::fs::rename(&temp_destination, &self.destination)
+            .context("Failed to move temp repo to destination")?;
+
+        let opa_dir = self.destination.join("opa");
+        if opa_dir.exists() {
+            let (uid, gid) = get_opa_ids()?;
+            for entry in walkdir::WalkDir::new(&opa_dir) {
+                let entry = entry?;
+                lchown(entry.path(), Some(uid), Some(gid))
+                    .with_context(|| format!("Failed to chown {:?}", entry.path()))?;
+            }
+        }
+
+        let repo = gix::open(&self.destination)?;
 
         let head = repo.head_id()?;
         self.repo_head = Some(head.detach());
@@ -216,7 +250,15 @@ impl RepoUpdater {
     pub fn get_update(&mut self) -> Result<Option<gix::hash::ObjectId>> {
         if self.repo.is_none() {
             info!("[POLICY] Repo not valid, cloning..");
-            self.clone_repo()?;
+            loop {
+                match self.clone_repo() {
+                    Ok(()) => break,
+                    Err(e) => {
+                        error!("[POLICY] Clone failed: {}. Retrying in 5 mins...", e);
+                        thread::sleep(Duration::from_secs(300));
+                    }
+                }
+            }
         }
         // Store the old head for comparison
         let old_head = self.repo_head;
@@ -472,7 +514,6 @@ pub fn push_vm_policy_updates(
 
 pub async fn update_policies(
     admin_service: Arc<super::server::AdminServiceImpl>,
-    live_update: bool,
     policy_url: String,
     poll_interval: Duration,
     policyroot: &Path,
@@ -505,11 +546,7 @@ pub async fn update_policies(
         info!("[POLICY] Current HEAD is: {}", head_str);
 
         let _ = ensure_policy_cache(&vmpolicies, policycache, &shafile, &head_str);
-        //let _ = update_vms(admin_service.clone(), policycache, &head_str).unwrap();
-        if !live_update {
-            info!("[POLICY] Policy LIVE update is disabled.");
-            return;
-        }
+
         let wait_time = if poll_interval == Duration::ZERO {
             Duration::from_secs(300)
         } else {
@@ -585,4 +622,19 @@ pub async fn update_policies(
             thread::sleep(wait_time);
         }
     })
+}
+
+fn get_opa_ids() -> Result<(u32, u32)> {
+    let uid = get_id_from_file("/etc/passwd", "opa").context("User opa not found")?;
+    let gid = get_id_from_file("/etc/group", "opa").context("Group opa not found")?;
+    Ok((uid, gid))
+}
+
+fn get_id_from_file(path: &str, name: &str) -> Option<u32> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with(name) && line.as_bytes().get(name.len()) == Some(&b':'))
+        .and_then(|line| line.split(':').nth(2))
+        .and_then(|s| s.parse().ok())
 }

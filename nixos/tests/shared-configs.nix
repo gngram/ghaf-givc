@@ -55,6 +55,7 @@ in
             prefixLength = 24;
           }
         ];
+
         givc.admin = {
           enable = true;
           debug = true;
@@ -64,7 +65,7 @@ in
           policy = {
             url = "http://github.com/gngram/policy-store.git";
             rev = "fb72918b7f4b919630703f281592d699e15cc9e5";
-            sha256 = "sha256-fe2j48OB4yRS5mSbGNuil04O6YxSVlWEhS/Vl+S5DaE=";
+            sha256 = "sha256-vEzNchuoOFzU+u1w68gOvPAVepHVH535tPr7f5oSF8o=";
             opa.enable = true;
             updater.enable = false;
           };
@@ -235,6 +236,7 @@ in
             linger = true;
           };
         };
+
         networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
           {
             address = addrs.appvm;
@@ -274,6 +276,11 @@ in
               command = "/run/current-system/sw/bin/run-waypipe ${pkgs.foot}/bin/foot";
             }
           ];
+        };
+        givc.policy-rules = {
+          "sample.conf" = {
+            action = "${pkgs.bash}/bin/bash --version";
+          };
         };
       };
     tests-updatevm = {

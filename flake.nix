@@ -104,6 +104,7 @@
           appvm = import ./nixos/modules/appvm.nix { inherit self; };
           dbus = import ./nixos/modules/dbus.nix { inherit self; };
           tls = import ./nixos/modules/tls.nix { inherit self; };
+          #policies = import ./nixos/modules/policies.nix { inherit self; };
           ota-update-server = import ./nixos/modules/update-server.nix { inherit self; };
         };
 
@@ -114,7 +115,6 @@
           givc-docs = self.packages.${prev.stdenv.hostPlatform.system}.docs;
           ota-update-server = self.packages.${prev.stdenv.hostPlatform.system}.givc-admin.update-server;
         };
-
       };
     };
 }

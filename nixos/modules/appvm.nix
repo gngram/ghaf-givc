@@ -29,9 +29,14 @@ let
     proxySubmodule
     tlsSubmodule
     eventSubmodule
+    policySubmodule
     ;
+  rules = config.givc.policy-rules;
+  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
+  imports = [
+  ];
   options.givc.appvm = {
     enable = mkEnableOption "GIVC appvm agent module";
 
@@ -200,6 +205,12 @@ in
     };
   };
 
+  options.givc.policy-rules = mkOption {
+    type = types.attrsOf policySubmodule;
+    default = { };
+    description = "Ghaf policy rules mapped to actions.";
+  };
+
   config = mkIf cfg.enable {
     assertions = [
       {
@@ -303,5 +314,6 @@ in
         );
       in
       [ agentPort ] ++ proxyPorts ++ eventPorts;
+    environment.etc."policies/installers.json".text = actionsJson;
   };
 }

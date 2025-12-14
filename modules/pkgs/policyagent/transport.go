@@ -38,7 +38,6 @@ func NewPolicyAgentServer() (*PolicyAgentServer, error) {
 	return &PolicyAgentServer{}, nil
 }
 
-// StreamPolicy is the implementation of the gRPC bidirectional streaming method.
 func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServer) error {
 	log.Info("Policy stream initiated by givc-admin.")
 	tempFile, err := os.CreateTemp("", "policy-*.tar.gz")
@@ -86,18 +85,13 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		log.Errorf("Spurious policy received")
 		return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 	}
-	log.Infof("Policy update info: ChangeSet=%s OldRev=%s NewRev=%s, Size:%d bytes", changeSet, oldRev, newRev)
+	log.Infof("Policy update info: ChangeSet=%s OldRev=%s NewRev=%s", changeSet, oldRev, newRev)
 
 	tempFile.Close()
 
 	policyBaseDir := "/etc/policies"
-	actionFile := filepath.Join(policyBaseDir, "update_actions.json")
-	/* TODO: disabled for debugging
-	if !FileExists(actionFile) {
-		log.Infof("Policy update ignored, policy install rules not found.")
-		return stream.SendAndClose(&pb.Status{Status: "OK"})
-	}
-	*/
+	actionFile := filepath.Join(policyBaseDir, "installers.json")
+
 	vmPolicyDir := filepath.Join(policyBaseDir, "vm-policies")
 	revFile := filepath.Join(policyBaseDir, ".rev")
 
@@ -113,7 +107,9 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		}
 	}
 
+	log.Infof("ExtractPolicy=%v", extractPolicy)
 	if extractPolicy {
+
 		log.Infof("Extracting policy archive %s to %s", tempFile.Name(), vmPolicyDir)
 		if err := extractTarGz(tempFile.Name(), vmPolicyDir); err != nil {
 			log.Errorf("Failed to extract policy archive: %v", err)
@@ -125,7 +121,6 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 		}
 
-		/* TODO: Remove after debug */
 		if !FileExists(actionFile) {
 			log.Infof("Policy update ignored, policy install rules not found.")
 			return stream.SendAndClose(&pb.Status{Status: "OK"})
@@ -295,19 +290,30 @@ func installAllPolicies(policyDir string, actions ActionMap) error {
 
 func installPolicy(action, targetPath string) error {
 	action = strings.TrimSpace(action)
+
 	if action == "" {
 		return fmt.Errorf("empty action command")
 	}
 
+	action = strings.ReplaceAll(action, "{target}", targetPath)
 	parts := strings.Fields(action)
 	cmdName := parts[0]
-	args := append(parts[1:], targetPath)
+	if cmdName == "" {
+		return fmt.Errorf("empty command name")
+	}
+
+	args := parts[1:]
 
 	cmd := exec.Command(cmdName, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	log.Infof("Executing policy install command: %s %s", cmdName, strings.Join(args, " "))
+	cmd.Run()
+	cmd.Wait()
+	log.Infof("Policy install command completed with exit code %d", cmd.ProcessState.ExitCode())
+	if cmd.ProcessState.ExitCode() != 0 {
+		return fmt.Errorf("command exited with code %d", cmd.ProcessState.ExitCode())
+	}
 
-	return cmd.Run()
+	return nil
 }
 
 func FileExists(path string) bool {

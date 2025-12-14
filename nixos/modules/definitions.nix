@@ -189,5 +189,17 @@ in
     };
   };
 
+  policySubmodule = types.submodule (
+    { name, ... }:
+    {
+      options = {
+        action = mkOption {
+          type = types.str;
+          description = "Action associated with policy rule '${name}'.";
+        };
+      };
+    }
+  );
+
   inherit transportSubmodule;
 }

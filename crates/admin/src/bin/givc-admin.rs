@@ -106,18 +106,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_default();
     info!("POLICY  agents starting....");
 
-    let th_handle = Some(
-        admin::policy_updater::update_policies(
-            admin_service.clone_inner(),
-            cli.policy_updater,
-            policy_url,
-            duration,
-            Path::new("/etc/policies"),
-            branch,
-        )
-        .await,
-    );
-    info!("POLICY  agents started....");
+    let mut th_handle: Option<std::thread::JoinHandle<()>> = None;
+    if cli.policy_updater {
+        info!("POLICY  updater enabled....");
+        th_handle = Some(
+            admin::policy_updater::update_policies(
+                admin_service.clone_inner(),
+                policy_url,
+                duration,
+                Path::new("/etc/policies"),
+                branch,
+            )
+            .await,
+        );
+        info!("POLICY  agents started....");
+    } else {
+        info!("POLICY  updater disabled....");
+    }
 
     let _ = builder
         .add_service(reflect)

@@ -23,9 +23,14 @@ let
   inherit (import ./definitions.nix { inherit config lib; })
     transportSubmodule
     tlsSubmodule
+    policySubmodule
     ;
+  rules = config.givc.policy-rules;
+  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
+  imports = [
+  ];
   options.givc.host = {
     enable = mkEnableOption ''givc host agent module, which is responsible for managing system VMs and app VMs.'';
 
@@ -167,6 +172,12 @@ in
     '';
   };
 
+  options.givc.policy-rules = mkOption {
+    type = types.attrsOf policySubmodule;
+    default = { };
+    description = "Ghaf policy rules mapped to actions.";
+  };
+
   config = mkIf cfg.enable {
     assertions = [
       {
@@ -231,5 +242,6 @@ in
       self.packages.${pkgs.stdenv.hostPlatform.system}.ota-update
       pkgs.nixos-rebuild # Need for ota-update
     ];
+    environment.etc."policies/installers.json".text = actionsJson;
   };
 }

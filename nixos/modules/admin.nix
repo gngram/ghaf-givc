@@ -27,6 +27,7 @@ let
   inherit (import ./definitions.nix { inherit config lib; })
     transportSubmodule
     tlsSubmodule
+    policySubmodule
     ;
   tcpAddresses = lib.filter (addr: addr.protocol == "tcp") cfg.addresses;
   unixAddresses = lib.filter (addr: addr.protocol == "unix") cfg.addresses;
@@ -34,9 +35,12 @@ let
   opaServerPort = 8181;
   opaPolicyDir = "/etc/policies/data/opa";
   opaUser = "opa";
-
+  rules = config.givc.policy-rules;
+  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
+  imports = [
+  ];
   options.givc.admin = {
     enable = mkOption {
       type = types.bool;
@@ -159,6 +163,12 @@ in
     };
   };
 
+  options.givc.policy-rules = mkOption {
+    type = types.attrsOf policySubmodule;
+    default = { };
+    description = "Ghaf policy rules mapped to actions.";
+  };
+
   config = mkIf cfg.enable {
     assertions = [
       {
@@ -215,18 +225,24 @@ in
 
         preStartScript = pkgs.writeScript "policy_init" ''
           #!${pkgs.bash}/bin/bash
+          if [ -f $policyDir/.cache/.rev ]; then
+            echo "Policy is up to date."
+            exit 0
+          fi
+
           policyDir=/etc/policies
-          if [ ! -d "$policyDir" ]; then
-            install -d -m 0755 -o root -g root "$policyDir/.cache"
+
+          install -d -m 0755 -o root -g root "$policyDir/data"
+          install -d -m 0755 -o root -g root "$policyDir/.cache"
+          ${pkgs.rsync}/bin/rsync -a --chown=root:root "${defaultPolicySrc}/.git" "$policyDir/data/"
+          install -d -m 0755 -o root -g root "$policyDir/.cache"
+
+          if [ -d "${defaultPolicySrc}/opa" ]; then
+            ${pkgs.rsync}/bin/rsync -a "${defaultPolicySrc}/opa" "$policyDir/data/"
           fi
-          if [ ! -d "$policyDir/data" ]; then
-            cp -r ${defaultPolicySrc} $policyDir/data
-            if [ -d "${opaPolicyDir}" ]; then
-              chown -R ${opaUser}:${opaUser} ${opaPolicyDir}
-            fi
-          fi
-          rm -rf $policyDir/.cache/*
-          if [ "$policyDir/data/vm-policies" ]; then
+              
+          if [ -d "${defaultPolicySrc}/vm-policies" ]; then
+            ${pkgs.rsync}/bin/rsync -a --chown=root:root "${defaultPolicySrc}/vm-policies" "$policyDir/data/"
             for vm_path in $policyDir/data/vm-policies/*; do
               if [ -d "$vm_path" ]; then
                 # Get the folder name (e.g., "vm-a")
@@ -239,8 +255,8 @@ in
                   -C $policyDir/data/vm-policies "$vm_name"
               fi
             done
-            echo "${cfg.policy.rev}" > $policyDir/.cache/.rev
           fi
+          echo "${cfg.policy.rev}" > "$policyDir/.cache/.rev" 
         '';
       in
       {
@@ -285,5 +301,6 @@ in
     networking.firewall.allowedTCPPorts = unique (
       (map (addr: strings.toInt addr.port) tcpAddresses) ++ lib.optional opacfg.enable opaServerPort
     );
+    environment.etc."policies/installers.json".text = actionsJson;
   };
 }
