@@ -35,7 +35,7 @@ let
   opaServerPort = 8181;
   opaPolicyDir = "/etc/policies/data/opa";
   opaUser = "opa";
-  rules = config.givc.policy-rules;
+  rules = cfg.policy-rules;
   actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
@@ -131,6 +131,12 @@ in
       '';
     };
 
+    policy-rules = mkOption {
+      type = types.attrsOf policySubmodule;
+      default = { };
+      description = "Ghaf policy rules mapped to actions.";
+    };
+
     policy = {
       opa = {
         enable = mkEnableOption "Start open policy agent service.";
@@ -161,12 +167,6 @@ in
         };
       };
     };
-  };
-
-  options.givc.policy-rules = mkOption {
-    type = types.attrsOf policySubmodule;
-    default = { };
-    description = "Ghaf policy rules mapped to actions.";
   };
 
   config = mkIf cfg.enable {
@@ -234,15 +234,15 @@ in
 
           install -d -m 0755 -o root -g root "$policyDir/data"
           install -d -m 0755 -o root -g root "$policyDir/.cache"
-          ${pkgs.rsync}/bin/rsync -a --chown=root:root "${defaultPolicySrc}/.git" "$policyDir/data/"
+          ${pkgs.rsync}/bin/rsync -ar --chown=root:root "${defaultPolicySrc}/.git" "$policyDir/data/"
           install -d -m 0755 -o root -g root "$policyDir/.cache"
 
           if [ -d "${defaultPolicySrc}/opa" ]; then
-            ${pkgs.rsync}/bin/rsync -a "${defaultPolicySrc}/opa" "$policyDir/data/"
+            ${pkgs.rsync}/bin/rsync -ar "${defaultPolicySrc}/opa" "$policyDir/data/"
           fi
-              
+
           if [ -d "${defaultPolicySrc}/vm-policies" ]; then
-            ${pkgs.rsync}/bin/rsync -a --chown=root:root "${defaultPolicySrc}/vm-policies" "$policyDir/data/"
+            ${pkgs.rsync}/bin/rsync -ar --chown=root:root "${defaultPolicySrc}/vm-policies" "$policyDir/data/"
             for vm_path in $policyDir/data/vm-policies/*; do
               if [ -d "$vm_path" ]; then
                 # Get the folder name (e.g., "vm-a")
@@ -256,7 +256,7 @@ in
               fi
             done
           fi
-          echo "${cfg.policy.rev}" > "$policyDir/.cache/.rev" 
+          echo "${cfg.policy.rev}" > "$policyDir/.cache/.rev"
         '';
       in
       {

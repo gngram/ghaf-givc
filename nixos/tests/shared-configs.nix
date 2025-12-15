@@ -276,10 +276,10 @@ in
               command = "/run/current-system/sw/bin/run-waypipe ${pkgs.foot}/bin/foot";
             }
           ];
-        };
-        givc.policy-rules = {
-          "sample.conf" = {
-            action = "${pkgs.bash}/bin/bash --version";
+          policy-rules = {
+            "sample.conf" = {
+              action = "${pkgs.bash}/bin/bash --version";
+            };
           };
         };
       };

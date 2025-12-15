@@ -25,7 +25,7 @@ let
     tlsSubmodule
     policySubmodule
     ;
-  rules = config.givc.policy-rules;
+  rules = cfg.policy-rules;
   actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
@@ -166,16 +166,16 @@ in
       '';
     };
 
+    policy-rules = mkOption {
+      type = types.attrsOf policySubmodule;
+      default = { };
+      description = "Ghaf policy rules mapped to actions.";
+    };
+
     enableExecModule = mkEnableOption ''
       execution module for (arbitrary) commands on the host via the GIVC agent. Please be aware that this
       introduces significant security implications as currently, no protection measures are implemented.
     '';
-  };
-
-  options.givc.policy-rules = mkOption {
-    type = types.attrsOf policySubmodule;
-    default = { };
-    description = "Ghaf policy rules mapped to actions.";
   };
 
   config = mkIf cfg.enable {

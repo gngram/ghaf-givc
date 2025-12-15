@@ -32,7 +32,7 @@ let
     eventSubmodule
     policySubmodule
     ;
-  rules = config.givc.policy-rules;
+  rules = cfg.policy-rules;
   actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
@@ -214,12 +214,12 @@ in
         > It is recommended to use a global TLS flag to avoid inconsistent configurations that will result in connection errors.
       '';
     };
-  };
 
-  options.givc.policy-rules = mkOption {
-    type = types.attrsOf policySubmodule;
-    default = { };
-    description = "Ghaf policy rules mapped to actions.";
+    policy-rules = mkOption {
+      type = types.attrsOf policySubmodule;
+      default = { };
+      description = "Ghaf policy rules mapped to actions.";
+    };
   };
 
   config = mkIf cfg.enable {
