@@ -90,7 +90,7 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 	tempFile.Close()
 
 	policyBaseDir := "/etc/policies"
-	actionFile := filepath.Join(policyBaseDir, "installers.json")
+	actionFile := "/etc/policy-installers/installers.json"
 
 	vmPolicyDir := filepath.Join(policyBaseDir, "vm-policies")
 	revFile := filepath.Join(policyBaseDir, ".rev")
@@ -169,15 +169,17 @@ func extractTarGz(tarGzPath string, destDir string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			log.Infof("[Policy]Creating directory: %s", target)
+			if err := os.MkdirAll(target, 0775); err != nil {
 				return err
 			}
 		case tar.TypeReg:
 			// Ensure parent directory exists
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			log.Infof("[Policy]Extracting File: %s", target)
+			if err := os.MkdirAll(filepath.Dir(target), 0775); err != nil {
 				return err
 			}
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0775)
 			if err != nil {
 				return err
 			}

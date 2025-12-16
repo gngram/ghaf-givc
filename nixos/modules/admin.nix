@@ -232,27 +232,25 @@ in
 
           policyDir=/etc/policies
 
-          install -d -m 0755 -o root -g root "$policyDir/data"
-          install -d -m 0755 -o root -g root "$policyDir/.cache"
-          ${pkgs.rsync}/bin/rsync -ar --chown=root:root "${defaultPolicySrc}/.git" "$policyDir/data/"
-          install -d -m 0755 -o root -g root "$policyDir/.cache"
+          install -d -m 0755  "$policyDir/data"
+          install -d -m 0755  "$policyDir/.cache"
+          ${pkgs.rsync}/bin/rsync -ar "${defaultPolicySrc}/.git" "$policyDir/data/"
+          install -d -m 0755  "$policyDir/.cache"
 
           if [ -d "${defaultPolicySrc}/opa" ]; then
             ${pkgs.rsync}/bin/rsync -ar "${defaultPolicySrc}/opa" "$policyDir/data/"
           fi
 
           if [ -d "${defaultPolicySrc}/vm-policies" ]; then
-            ${pkgs.rsync}/bin/rsync -ar --chown=root:root "${defaultPolicySrc}/vm-policies" "$policyDir/data/"
+            ${pkgs.rsync}/bin/rsync -ar "${defaultPolicySrc}/vm-policies" "$policyDir/data/"
             for vm_path in $policyDir/data/vm-policies/*; do
               if [ -d "$vm_path" ]; then
                 # Get the folder name (e.g., "vm-a")
                 vm_name=$(basename "$vm_path")
                 echo "Packaging $vm_name..."
                 ${pkgs.gnutar}/bin/tar --sort=name \
-                  --mtime='@0' \
-                  --owner=0 --group=0 --numeric-owner \
                   -czf "$policyDir/.cache/$vm_name.tar.gz" \
-                  -C $policyDir/data/vm-policies "$vm_name"
+                  -C $policyDir/data/vm-policies/$vm_name .
               fi
             done
           fi
@@ -301,6 +299,6 @@ in
     networking.firewall.allowedTCPPorts = unique (
       (map (addr: strings.toInt addr.port) tcpAddresses) ++ lib.optional opacfg.enable opaServerPort
     );
-    environment.etc."policies/installers.json".text = actionsJson;
+    environment.etc."policy-installers/installers.json".text = actionsJson;
   };
 }

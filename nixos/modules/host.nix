@@ -242,6 +242,6 @@ in
       self.packages.${pkgs.stdenv.hostPlatform.system}.ota-update
       pkgs.nixos-rebuild # Need for ota-update
     ];
-    environment.etc."policies/installers.json".text = actionsJson;
+    environment.etc."policy-installers/installers.json".text = actionsJson;
   };
 }

@@ -320,6 +320,6 @@ in
         );
       in
       [ agentPort ] ++ proxyPorts ++ eventPorts;
-    environment.etc."policies/installers.json".text = actionsJson;
+    environment.etc."policy-installers/installers.json".text = actionsJson;
   };
 }

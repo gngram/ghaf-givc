@@ -73,18 +73,21 @@ impl RepoUpdater {
                         .unwrap_or_default();
 
                     if remote_url == updater.url {
-                        info!(
-                            "[POLICY] Successfully loaded existing repository from '{}'",
-                            updater.destination.display()
-                        );
                         let head = repo.head_id()?;
                         updater.repo_head = Some(head.detach());
                         updater.repo = Some(repo);
+                        info!(
+                            "[POLICY] Successfully loaded existing repository from '{}' Current head is: '{}'",
+                            updater.destination.display(),
+                            updater.repo_head.as_ref().unwrap()
+                        );
                         return Ok(updater);
                     } else {
                         info!(
-                            "[POLICY] Repository at '{}' is not from provided source. Re-cloning...",
-                            updater.destination.display()
+                            "[POLICY] Repository at '{}' is not from provided source. Re-cloning... remote url is '{}' and should be '{}'",
+                            updater.destination.display(),
+                            remote_url,
+                            updater.url
                         );
                     }
                 }
