@@ -40,7 +40,7 @@ func NewPolicyAgentServer() (*PolicyAgentServer, error) {
 
 func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServer) error {
 	policyBaseDir := "/etc/policies"
-	actionFile := "/etc/policy-installers/installers.json"
+	actionFile := "/etc/policy-agent/config.json"
 
 	log.Debugf("[PolicyAgent] Policy stream initiated by givc-admin.")
 
@@ -239,7 +239,7 @@ func ProcessChangeset(changeset, policyDir string, actions ActionMap) error {
 	for name := range names {
 		action, ok := actions[name]
 		if !ok {
-			log.Infof("No action found for %q, skipping\n", name)
+			log.Infof("[PolicyAgent] No action found for %q, skipping\n", name)
 			continue
 		}
 
@@ -297,6 +297,7 @@ func getModifiedPolicies(changeset, root string) map[string]struct{} {
 	return result
 }
 
+/* Performs actions to install all the defined policies */
 func installAllPolicies(policyDir string, actions ActionMap) error {
 	/*
 	 * Check for each entry in action map json if a policy file/dir exists
@@ -318,6 +319,7 @@ func installAllPolicies(policyDir string, actions ActionMap) error {
 	return nil
 }
 
+/* Runs action to install the policy available at targetPath */
 func installPolicy(action, targetPath string) error {
 	action = strings.TrimSpace(action)
 
@@ -325,6 +327,7 @@ func installPolicy(action, targetPath string) error {
 		return fmt.Errorf("empty action command")
 	}
 
+	/* Before running replace {target} with policy path in the action command */
 	action = strings.ReplaceAll(action, "{target}", targetPath)
 	parts := strings.Fields(action)
 	cmdName := parts[0]
@@ -335,10 +338,10 @@ func installPolicy(action, targetPath string) error {
 	args := parts[1:]
 
 	cmd := exec.Command(cmdName, args...)
-	log.Infof("Executing policy install command: %s %s", cmdName, strings.Join(args, " "))
+	log.Infof("[PolicyAgent] Executing policy install command: %s %s", cmdName, strings.Join(args, " "))
 	cmd.Run()
 	cmd.Wait()
-	log.Infof("Policy install command completed with exit code %d", cmd.ProcessState.ExitCode())
+	log.Infof("[PolicyAgent] Policy install command completed with exit code %d", cmd.ProcessState.ExitCode())
 	if cmd.ProcessState.ExitCode() != 0 {
 		return fmt.Errorf("command exited with code %d", cmd.ProcessState.ExitCode())
 	}
@@ -346,6 +349,7 @@ func installPolicy(action, targetPath string) error {
 	return nil
 }
 
+/* Checks if a file exists */
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -354,6 +358,7 @@ func FileExists(path string) bool {
 	return !os.IsNotExist(err)
 }
 
+/* Gets the size of a file */
 func GetFileSize(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {

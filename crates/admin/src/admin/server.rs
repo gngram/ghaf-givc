@@ -1,7 +1,7 @@
 #![allow(clippy::similar_names)]
 
 use super::entry::{Placement, RegistryEntry};
-use super::policy_server::PolicyServer;
+use super::opa_server::OPAServer;
 use crate::pb::{
     self, ApplicationRequest, ApplicationResponse, Empty, ListGenerationsResponse, LocaleRequest,
     PolicyQueryRequest, PolicyQueryResponse, QueryListResponse, RegistryRequest, RegistryResponse,
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tonic::{Code, Response, Status};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub use pb::admin_service_server::AdminServiceServer;
 
@@ -52,7 +52,8 @@ pub struct AdminServiceImpl {
     tls_config: Option<TlsConfig>,
     locale_assigns: Mutex<Vec<pb::locale::LocaleAssignment>>,
     timezone: Mutex<String>,
-    policy_server: PolicyServer,
+    policy_server_enabled: bool,
+    opa_server: Option<OPAServer>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,8 +79,17 @@ impl Validator {
 
 impl AdminService {
     #[must_use]
-    pub fn new(use_tls: Option<TlsConfig>, monitoring: bool) -> Self {
-        let inner = Arc::new(AdminServiceImpl::new(use_tls));
+    pub fn new(
+        use_tls: Option<TlsConfig>,
+        monitoring: bool,
+        enable_policy_server: bool,
+        enable_opa_server: bool,
+    ) -> Self {
+        let inner = Arc::new(AdminServiceImpl::new(
+            use_tls,
+            enable_policy_server,
+            enable_opa_server,
+        ));
         let clone = inner.clone();
         if monitoring {
             tokio::task::spawn(async move {
@@ -97,7 +107,11 @@ impl AdminService {
 
 impl AdminServiceImpl {
     #[must_use]
-    pub fn new(use_tls: Option<TlsConfig>) -> Self {
+    pub fn new(
+        use_tls: Option<TlsConfig>,
+        enable_policy_server: bool,
+        enable_opa_server: bool,
+    ) -> Self {
         let timezone = std::fs::read_to_string(TIMEZONE_CONF)
             .ok()
             .and_then(|l| l.lines().next().map(ToOwned::to_owned))
@@ -117,13 +131,19 @@ impl AdminServiceImpl {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let opa = if enable_opa_server {
+            Some(OPAServer::new("http://localhost:8181/v1/data/".to_string()))
+        } else {
+            None
+        };
         Self {
             registry: Registry::new(),
             state: State::Init,
             tls_config: use_tls,
             timezone: Mutex::new(timezone),
             locale_assigns: Mutex::new(locale_assigns),
-            policy_server: PolicyServer::new("http://localhost:8181/v1/data/".to_string()),
+            policy_server_enabled: enable_policy_server,
+            opa_server: opa,
         }
     }
 
@@ -192,11 +212,12 @@ impl AdminServiceImpl {
         query: &str,
         policy_path: &str,
     ) -> anyhow::Result<String> {
-        let result = self
-            .policy_server
-            .evaluate_query(query, policy_path)
-            .await?;
-        Ok(result)
+        if let Some(ref opa_server) = self.opa_server {
+            let result = opa_server.evaluate_query(query, policy_path).await?;
+            return Ok(result);
+        } else {
+            Ok("OPA Server not available".to_string())
+        }
     }
 
     pub async fn push_policy_update(
@@ -207,6 +228,10 @@ impl AdminServiceImpl {
         new_rev: &str,
         change_set: &str,
     ) -> anyhow::Result<()> {
+        if !self.policy_server_enabled {
+            return Ok(());
+        }
+
         let agent_service_name = VmName::Vm(vm_name).agent_service();
         info!(
             "Pushing policy update to vm '{}' via agent '{}'",
@@ -418,11 +443,7 @@ impl AdminServiceImpl {
 
     // Refactoring kludge
     pub fn register(&self, entry: RegistryEntry) {
-        let binding = entry.clone();
-        let name = binding.vm_name().clone();
-        let agent = binding.agent_name().clone();
         self.registry.register(entry);
-        info!("RRR Registered:{:#?}, agent= {:#?}", name, agent);
     }
 
     pub(crate) async fn start_app(&self, req: ApplicationRequest) -> anyhow::Result<String> {
@@ -538,37 +559,43 @@ impl pb::admin_service_server::AdminService for AdminService {
         if let Some(name) = notify
             && let Ok(endpoint) = self.inner.agent_endpoint(&name)
         {
-            // Clone self.inner here to move into the spawned task
-            let inner_clone = self.inner.clone();
-            let vm_name = endpoint.transport.tls_name.clone();
-            let policy_cache_path =
-                std::path::PathBuf::from(format!("/etc/policies/.cache/{}.tar.gz", vm_name));
-
             let locale_assigns = self.inner.locale_assigns.lock().await.clone();
             let timezone = self.inner.timezone.lock().await.clone();
+            let inner_clone = self.inner.clone();
+            let vm_name = endpoint.transport.tls_name.clone();
+
             tokio::spawn(async move {
                 if let Ok(conn) = endpoint.connect().await {
-                    if tokio::fs::metadata(&policy_cache_path).await.is_ok() {
-                        /* Read the cached policy rev in a string */
-                        let rev_file = std::path::PathBuf::from("/etc/policies/.cache/.rev");
-                        let policy_rev = fs::read_to_string(rev_file)
-                            .ok()
-                            .map(|s| s.trim().to_string());
+                    if inner_clone.policy_server_enabled {
+                        let policy_cache_path = std::path::PathBuf::from(format!(
+                            "/etc/policies/.cache/{}.tar.gz",
+                            vm_name
+                        ));
 
-                        if let Err(e) = inner_clone
-                            .push_policy_update(
-                                &vm_name,
-                                &policy_cache_path,
-                                "",
-                                policy_rev.as_deref().unwrap_or(""),
-                                "",
-                            )
-                            .await
-                        {
-                            error!("Failed to push cached policy update to {}: {}", vm_name, e);
+                        if tokio::fs::metadata(&policy_cache_path).await.is_ok() {
+                            /* Read the cached policy rev in a string */
+                            let rev_file = std::path::PathBuf::from("/etc/policies/.cache/.rev");
+                            let policy_rev = fs::read_to_string(rev_file)
+                                .ok()
+                                .map(|s| s.trim().to_string());
+
+                            if let Err(e) = inner_clone
+                                .push_policy_update(
+                                    &vm_name,
+                                    &policy_cache_path,
+                                    "",
+                                    policy_rev.as_deref().unwrap_or(""),
+                                    "",
+                                )
+                                .await
+                            {
+                                warn!("Failed to push cached policy update to {}: {}", vm_name, e);
+                            } else {
+                                info!("[Policy_SERVER] Pushed cached policy update to {}", vm_name);
+                            }
+                        } else {
+                            info!("No cached policy archive found for {}", vm_name);
                         }
-                    } else {
-                        debug!("No cached policy archive found for {}", vm_name);
                     }
                     let mut client =
                         pb::locale::locale_client_client::LocaleClientClient::new(conn);
@@ -585,35 +612,6 @@ impl pb::admin_service_server::AdminService for AdminService {
         info!("Responding with {res:?}");
         Ok(Response::new(res))
     }
-
-    /*
-    async fn push_policy_stream(
-        &self,
-        request: tonic::Request<PushPolicyRequest>,
-    ) -> std::result::Result<tonic::Response<Empty>, tonic::Status> {
-        escalate(request, async move |req| {
-            let vm_name = VmName::Vm(&req.vm_name).agent_service();
-            let endpoint = self.inner.agent_endpoint(&vm_name)?;
-            let client = PolicyAgentClient::new(endpoint);
-
-            let updates = iter(vec![
-                pb::policyagent::PolicyUpdate {
-                    message: "hello world,".to_string(),
-                },
-                pb::policyagent::PolicyUpdate {
-                    message: "I am good to go".to_string(),
-                },
-            ]);
-
-            client
-                .stream_policy(updates)
-                .await
-                .with_context(|| format!("Failed to push policy stream on {}", vm_name))?;
-            Ok(Empty {})
-        })
-        .await
-    }
-    */
 
     async fn start_application(
         &self,

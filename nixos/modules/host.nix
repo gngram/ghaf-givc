@@ -23,10 +23,11 @@ let
   inherit (import ./definitions.nix { inherit config lib; })
     transportSubmodule
     tlsSubmodule
-    policySubmodule
+    policyAgentSubmodule
     ;
-  rules = cfg.policy-rules;
-  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
+  rules = cfg.policyAgent.policyConfig;
+  policyConfigJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
+
 in
 {
   imports = [
@@ -166,8 +167,8 @@ in
       '';
     };
 
-    policy-rules = mkOption {
-      type = types.attrsOf policySubmodule;
+    policyAgent = mkOption {
+      type = policyAgentSubmodule;
       default = { };
       description = "Ghaf policy rules mapped to actions.";
     };
@@ -242,6 +243,6 @@ in
       self.packages.${pkgs.stdenv.hostPlatform.system}.ota-update
       pkgs.nixos-rebuild # Need for ota-update
     ];
-    environment.etc."policy-installers/installers.json".text = actionsJson;
+    environment.etc."policy-agent/config.json".text = mkIf cfg.policyAgent.enable policyConfigJson;
   };
 }

@@ -21,9 +21,6 @@ struct Cli {
     #[arg(long, env = "TLS")]
     use_tls: bool,
 
-    #[arg(long, env = "POLICY_UPDATER")]
-    policy_updater: bool,
-
     #[arg(long, env = "CA_CERT")]
     ca_cert: Option<PathBuf>,
 
@@ -35,6 +32,12 @@ struct Cli {
 
     #[arg(long, env = "GIVC_MONITORING", default_value_t = true)]
     monitoring: bool,
+
+    #[arg(long, env = "POLICY_SERVER")]
+    policy_server: bool,
+
+    #[arg(long, env = "POLICY_UPDATER")]
+    policy_updater: bool,
 
     #[arg(long, env = "POLICY_URL")]
     policy_url: Option<PathBuf>,
@@ -82,7 +85,12 @@ async fn main() -> anyhow::Result<()> {
         .build_v1()
         .unwrap();
 
-    let admin_service = admin::server::AdminService::new(tls, cli.monitoring);
+    let admin_service = admin::server::AdminService::new(
+        tls,
+        cli.monitoring,
+        cli.policy_server,
+        cli.policy_updater,
+    );
     let admin_service_svc = admin::server::AdminServiceServer::new(admin_service.clone());
 
     let sys_opts = tokio_listener::SystemOptions::default();
@@ -107,21 +115,23 @@ async fn main() -> anyhow::Result<()> {
     info!("POLICY  agents starting....");
 
     let mut th_handle: Option<std::thread::JoinHandle<()>> = None;
-    if cli.policy_updater {
-        info!("POLICY  updater enabled....");
-        th_handle = Some(
-            admin::policy_updater::update_policies(
-                admin_service.clone_inner(),
-                policy_url,
-                duration,
-                Path::new("/etc/policies"),
-                branch,
-            )
-            .await,
-        );
-        info!("POLICY  agents started....");
-    } else {
-        info!("POLICY  updater disabled....");
+    if cli.policy_server {
+        if cli.policy_updater {
+            info!("POLICY  updater enabled....");
+            th_handle = Some(
+                admin::policy_updater::update_policies(
+                    admin_service.clone_inner(),
+                    policy_url,
+                    duration,
+                    Path::new("/etc/policies"),
+                    branch,
+                )
+                .await,
+            );
+            info!("POLICY  agents started....");
+        } else {
+            info!("POLICY  updater disabled....");
+        }
     }
 
     let _ = builder

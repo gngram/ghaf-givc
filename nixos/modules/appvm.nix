@@ -29,10 +29,10 @@ let
     proxySubmodule
     tlsSubmodule
     eventSubmodule
-    policySubmodule
+    policyAgentSubmodule
     ;
-  rules = cfg.policy-rules;
-  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
+  rules = cfg.policyAgent.policyConfig;
+  policyConfigJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
   imports = [
@@ -203,8 +203,8 @@ in
         > It is recommended to use a global TLS flag to avoid inconsistent configurations that will result in connection errors.
       '';
     };
-    policy-rules = mkOption {
-      type = types.attrsOf policySubmodule;
+    policyAgent = mkOption {
+      type = policyAgentSubmodule;
       default = { };
       description = "Ghaf policy rules mapped to actions.";
     };
@@ -300,6 +300,7 @@ in
         "ADMIN_SERVER" = "${toJSON cfg.admin}";
         "TLS_CONFIG" = "${toJSON cfg.tls}";
         "EVENT_PROXY" = "${optionalString (cfg.eventProxy != null) (toJSON cfg.eventProxy)}";
+        "POLICY_AGENT" = "${trivial.boolToString cfg.policyAgent.enable}";
       };
     };
     networking.firewall.allowedTCPPorts =
@@ -313,6 +314,9 @@ in
         );
       in
       [ agentPort ] ++ proxyPorts ++ eventPorts;
-    environment.etc."policy-installers/installers.json".text = actionsJson;
+
+    environment.etc = mkIf cfg.policyAgent.enable {
+      "policy-agent/config.json".text = policyConfigJson;
+    };
   };
 }

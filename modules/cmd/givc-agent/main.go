@@ -58,12 +58,17 @@ func setupGRPCServices(agentEndpointConfig *givc_types.EndpointConfig, config *g
 	}
 	grpcServices = append(grpcServices, statsServer)
 
-	// Create policy agent server
-	policyAgentServer, err := givc_policyagent.NewPolicyAgentServer()
-	if err != nil {
-		log.Fatalf("Cannot create policy agent server: %v", err)
+	// Policy agent server
+	if config.Capabilities.Optional.PolicyAgentEnabled {
+		log.Infof("[PolicyAgent] Agent starting... ")
+		policyAgentServer, err := givc_policyagent.NewPolicyAgentServer()
+		if err != nil {
+			log.Fatalf("Cannot create policy agent server: %v", err)
+		} else {
+			log.Infof("[PolicyAgent] Agent started.")
+		}
+		grpcServices = append(grpcServices, policyAgentServer)
 	}
-	grpcServices = append(grpcServices, policyAgentServer)
 
 	// Optional capability services - instantiate based on config flags
 	if config.Capabilities.Optional.ExecEnabled {

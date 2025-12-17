@@ -45,6 +45,14 @@ let
       };
     };
   };
+  policySubmodule = types.submodule {
+    options = {
+      action = mkOption {
+        type = types.str;
+        description = "Action associated with policy rule.";
+      };
+    };
+  };
 
 in
 {
@@ -189,17 +197,33 @@ in
     };
   };
 
-  policySubmodule = types.submodule (
-    { name, ... }:
-    {
-      options = {
-        action = mkOption {
-          type = types.str;
-          description = "Action associated with policy rule '${name}'.";
-        };
+  policyAgentSubmodule = types.submodule {
+    options = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Enable policy Agent.";
       };
-    }
-  );
+
+      policyConfig = mkOption {
+        type = types.attrsOf policySubmodule;
+        default = { };
+        example = literalExpression ''
+          policyConfig =
+            {
+              'policy-name1' = {
+                action = "action1";
+              };
+              'policy-name2' = {
+                action = "action2";
+              };
+            };'';
+        description = ''
+          Policy configuration for the policy agent.
+        '';
+      };
+    };
+  };
 
   inherit transportSubmodule;
 }

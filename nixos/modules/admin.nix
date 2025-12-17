@@ -9,8 +9,8 @@
 }:
 let
   cfg = config.givc.admin;
-  opacfg = cfg.policy.opa;
-  updatercfg = cfg.policy.updater;
+  opacfg = cfg.policyServer.opa;
+  updatercfg = cfg.policyServer.updater;
   inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) givc-admin;
   inherit (lib)
     mkOption
@@ -27,7 +27,6 @@ let
   inherit (import ./definitions.nix { inherit config lib; })
     transportSubmodule
     tlsSubmodule
-    policySubmodule
     ;
   tcpAddresses = lib.filter (addr: addr.protocol == "tcp") cfg.addresses;
   unixAddresses = lib.filter (addr: addr.protocol == "unix") cfg.addresses;
@@ -35,8 +34,6 @@ let
   opaServerPort = 8181;
   opaPolicyDir = "/etc/policies/data/opa";
   opaUser = "opa";
-  rules = cfg.policy-rules;
-  actionsJson = builtins.toJSON (lib.mapAttrs (_name: rule: rule.action) rules);
 in
 {
   imports = [
@@ -131,16 +128,8 @@ in
       '';
     };
 
-    policy-rules = mkOption {
-      type = types.attrsOf policySubmodule;
-      default = { };
-      description = "Ghaf policy rules mapped to actions.";
-    };
-
-    policy = {
-      opa = {
-        enable = mkEnableOption "Start open policy agent service.";
-      };
+    policyServer = {
+      enable = mkEnableOption "Enable policy Server.";
       url = mkOption {
         type = types.str;
         description = "URL of policy store";
@@ -152,6 +141,10 @@ in
       sha256 = mkOption {
         type = types.str;
         description = "SHA of the default policy";
+      };
+
+      opa = {
+        enable = mkEnableOption "Start open policy agent service.";
       };
       updater = {
         enable = mkEnableOption "Enable policy updater.";
@@ -217,9 +210,9 @@ in
         );
 
         defaultPolicySrc = pkgs.fetchgit {
-          inherit (cfg.policy) url;
-          inherit (cfg.policy) rev;
-          inherit (cfg.policy) sha256;
+          inherit (cfg.policyServer) url;
+          inherit (cfg.policyServer) rev;
+          inherit (cfg.policyServer) sha256;
           leaveDotGit = true;
         };
 
@@ -254,7 +247,7 @@ in
               fi
             done
           fi
-          echo "${cfg.policy.rev}" > "$policyDir/.cache/.rev"
+          echo "${cfg.policyServer.rev}" > "$policyDir/.cache/.rev"
         '';
       in
       {
@@ -280,10 +273,7 @@ in
           "SUBTYPE" = "5";
           "TLS" = "${trivial.boolToString cfg.tls.enable}";
           "SERVICES" = "${concatStringsSep " " cfg.services}";
-          "POLICY_UPDATER" = "${trivial.boolToString updatercfg.enable}";
-          "POLICY_URL" = "${cfg.policy.url}";
-          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
-          "POLICY_UPDATE_REF" = "${updatercfg.ref}";
+          "POLICY_SERVER" = "${trivial.boolToString cfg.policyServer.enable}";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";
@@ -293,12 +283,17 @@ in
         // attrsets.optionalAttrs cfg.debug {
           "RUST_BACKTRACE" = "1";
           "GIVC_LOG" = "givc=debug,info";
+        }
+        // attrsets.optionalAttrs cfg.policyServer.enable {
+          "POLICY_UPDATER" = "${trivial.boolToString updatercfg.enable}";
+          "POLICY_URL" = "${cfg.policyServer.url}";
+          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
+          "POLICY_UPDATE_REF" = "${updatercfg.ref}";
         };
       };
 
     networking.firewall.allowedTCPPorts = unique (
       (map (addr: strings.toInt addr.port) tcpAddresses) ++ lib.optional opacfg.enable opaServerPort
     );
-    environment.etc."policy-installers/installers.json".text = actionsJson;
   };
 }
