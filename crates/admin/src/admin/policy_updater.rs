@@ -72,15 +72,16 @@ impl RepoUpdater {
                         updater.new_head = Some(head.detach());
                         updater.old_head = Some(head.detach());
                         updater.repo = Some(repo);
+                        updater.ensure_remote_configured()?;
                         info!(
-                            "[POLICY_UPDATER] Successfully loaded existing repository from '{}' Current head is: '{}'",
+                            "policy-updater: Successfully loaded existing repository from '{}' Current head is: '{}'",
                             updater.destination.display(),
                             updater.new_head.as_ref().unwrap()
                         );
                         return Ok(updater);
                     } else {
                         info!(
-                            "[POLICY_UPDATER] Updating default repository '{}' from remote '{}'",
+                            "policy-updater: Updating default repository '{}' from remote '{}'",
                             updater.destination.display(),
                             updater.url
                         );
@@ -88,7 +89,7 @@ impl RepoUpdater {
                 }
                 Err(_) => {
                     info!(
-                        "[POLICY_UPDATER] Path '{}' exists but is not a valid git repository. Re-cloning...",
+                        "policy-updater: Path '{}' exists but is not a valid git repository. Re-cloning...",
                         updater.destination.display()
                     );
                 }
@@ -99,11 +100,33 @@ impl RepoUpdater {
         Ok(updater)
     }
 
+    fn ensure_remote_configured(&self) -> Result<()> {
+        let repo = self
+            .repo
+            .as_ref()
+            .context("policy-updater: Repo should be initialized")?;
+
+        let r = repo.find_remote(&*self.remote_name).with_context(|| {
+            format!(
+                "policy-updater: Remote '{}' not found in repository at {}. \
+                 The repository may have been cloned incorrectly or the remote was removed.",
+                self.remote_name,
+                self.destination.display()
+            )
+        })?;
+        info!(
+            "policy-updater: Remote '{}' configured successfully: {:?}",
+            self.remote_name, r
+        );
+
+        Ok(())
+    }
+
     /* Clone the repository from the provided URL and ref */
     fn clone_repo(&mut self) -> Result<()> {
-        info!("[POLICY_UPDATER] Cloning repository from: {}", self.url);
-        info!("[POLICY_UPDATER] Branch: {}", self.branch);
-        info!("[POLICY_UPDATER] Destination: {:?}", self.destination);
+        info!("policy-updater: Cloning repository from: {}", self.url);
+        info!("policy-updater: Branch: {}", self.branch);
+        info!("policy-updater: Destination: {:?}", self.destination);
 
         /* Clone repository in a temporary directory */
         let temp_destination = self.destination.with_extension("tmp");
@@ -111,7 +134,7 @@ impl RepoUpdater {
         if temp_destination.exists() {
             std::fs::remove_dir_all(&temp_destination).with_context(|| {
                 format!(
-                    "[POLICY_UPDATER] Failed to delete temporary directory '{}'",
+                    "policy-updater: Failed to delete temporary directory '{}'",
                     temp_destination.display()
                 )
             })?;
@@ -133,23 +156,22 @@ impl RepoUpdater {
         /* Replace policy store with the new one */
         if self.destination.exists() {
             std::fs::remove_dir_all(&self.destination)
-                .context("[POLICY_UPDATER] Failed to remove existing destination")?;
+                .context("policy-updater: Failed to remove existing destination")?;
         }
 
         std::fs::rename(&temp_destination, &self.destination)
-            .context("[POLICY_UPDATER] Failed to move temp repo to destination")?;
+            .context("policy-updater: Failed to move temp repo to destination")?;
 
         /* Reload the context from updated policies */
         let repo = gix::open(&self.destination)?;
-
         let head = repo.head_id()?;
         self.new_head = Some(head.detach());
         self.old_head = None;
         self.repo = Some(repo);
+        self.ensure_remote_configured()?;
 
-        info!("[POLICY_UPDATER] Repository cloned successfully.");
         info!(
-            "[POLICY_UPDATER] Checked out HEAD: {}",
+            "policy-updater: Repository cloned successfully. HEAD: {}",
             self.new_head.as_ref().unwrap()
         );
         Ok(())
@@ -167,54 +189,37 @@ impl RepoUpdater {
 
     /* Fetches the latest changes from the remote repository */
 
-    fn fetch_old(&self) -> Result<()> {
-        let repo = self
-            .repo
-            .as_ref()
-            .context("[POLICY_UPDATER] Repo should be initialized")?;
-        let remote_name = self.remote_name.as_str();
-        let remote = repo.find_remote(remote_name)?;
-
-        let mut progress = gix::progress::Discard;
-        let _fetch_outcome = remote
-            .connect(gix::remote::Direction::Fetch)?
-            .prepare_fetch(&mut progress, Default::default())?
-            .receive(progress, &gix::interrupt::IS_INTERRUPTED)?;
-        Ok(())
-    }
-
     fn fetch(&self) -> Result<()> {
         let repo = self
             .repo
             .as_ref()
-            .context("[POLICY_UPDATER] Repo should be initialized")?;
+            .context("policy-updater: Repo should be initialized")?;
 
-        // Sanity: ensure repo git_dir is writable (refs/reflogs will be written during receive()).
-        let git_dir = repo.git_dir();
-        let config_path = git_dir.join("config");
-
-        // This is a simple writeability test that doesn't mutate state.
-        fs::OpenOptions::new()
-            .write(true)
-            .open(&config_path)
-            .with_context(|| format!(
-                "[POLICY_UPDATER] Repo is not writable (cannot write {}). \
-                 If this repo comes from fetchgit (/nix/store), copy it to a writable path before fetching.",
-                config_path.display()
-            ))?;
-
+        let remote_name = self.remote_name.as_str();
         let remote = repo
-            .find_remote(self.remote_name.as_str())
-            .with_context(|| format!("[POLICY_UPDATER] Remote '{}' not found", self.remote_name))?;
+            .find_remote(remote_name)
+            .with_context(|| format!("policy-updater:Failed to find remote '{}'", remote_name))?;
+
+        debug!("policy-updater: Fetching from remote: {}", remote_name);
 
         let mut progress = gix::progress::Discard;
-        remote
+
+        let connection = remote
             .connect(gix::remote::Direction::Fetch)
-            .context("[POLICY_UPDATER] Failed to connect remote for fetch")?
+            .context("policy-updater:Failed to connect to remote")?;
+
+        let prepare = connection
             .prepare_fetch(&mut progress, Default::default())
-            .context("[POLICY_UPDATER] Failed to prepare fetch")?
-            .receive(progress, &gix::interrupt::IS_INTERRUPTED)
-            .context("[POLICY_UPDATER] Fetch failed while receiving/writing refs")?;
+            .context("policy-updater:Failed to prepare fetch")?;
+
+        let outcome = prepare
+            .receive(&mut progress, &gix::interrupt::IS_INTERRUPTED)
+            .context("policy-updater:Failed to receive objects from remote")?;
+
+        debug!(
+            "policy-updater: Fetch outcome: {} refs updated",
+            outcome.ref_map.mappings.len()
+        );
 
         Ok(())
     }
@@ -224,7 +229,7 @@ impl RepoUpdater {
         let repo = self
             .repo
             .as_ref()
-            .context("[POLICY_UPDATER] Repo should be initialized")?;
+            .context("policy-updater: Repo should be initialized")?;
         let local_branch = format!("refs/heads/{}", self.branch);
         let remote_name = self.remote_name.as_str();
 
@@ -266,7 +271,7 @@ impl RepoUpdater {
         gix::worktree::state::checkout(
             &mut index,
             repo.workdir()
-                .context("[POLICY_UPDATER] Repository has no working directory")?,
+                .context("policy-updater: Repository has no working directory")?,
             objects,
             &gix::progress::Discard,
             &gix::progress::Discard,
@@ -280,7 +285,7 @@ impl RepoUpdater {
         /* Update new_head context to the new commit */
         self.old_head = self.new_head;
         self.new_head = Some(commit_id);
-        info!("[POLICY_UPDATER] Checked out HEAD: {}", commit_id);
+        debug!("policy-updater: Checked out HEAD: {}", commit_id);
         Ok(())
     }
 
@@ -288,14 +293,11 @@ impl RepoUpdater {
         loop {
             match self.clone_repo() {
                 Ok(()) => {
-                    info!("[POLICY_UPDATER] Repository cloned successfully.");
+                    info!("policy-updater: Repository cloned successfully.");
                     break;
                 }
                 Err(e) => {
-                    error!(
-                        "[POLICY_UPDATER] Clone failed: {}. Retrying in 5 mins...",
-                        e
-                    );
+                    error!("policy-updater: Clone failed: {}. Retrying in 5 mins...", e);
                     thread::sleep(Duration::from_secs(300));
                 }
             }
@@ -311,12 +313,11 @@ impl RepoUpdater {
             let repo = self
                 .repo
                 .as_ref()
-                .context("[POLICY_UPDATER] Repo should be initialized")?;
+                .context("policy-updater: Repo should be initialized")?;
             let remote_tracking = format!("refs/remotes/{}/{}", self.remote_name, self.branch);
             let remote_ref = repo.find_reference(&remote_tracking)?;
             remote_ref.id().detach()
         };
-
         self.checkout(commit_id)?;
         if self.old_head != self.new_head {
             Ok(true)
@@ -327,11 +328,8 @@ impl RepoUpdater {
 
     /* Returns changeset between two commits */
     pub fn get_change_set(&self, from_rev: &str, to_rev: &str) -> Result<String> {
-        let repo = self.repo.as_ref().context(
-            "[POLICY_UPDATER] Repository not loaded. Call clone_repo or load_from_path first.",
-        )?;
-
-        info!("[POLICY_UPDATER] Diffing {} -> {}", from_rev, to_rev);
+        let repo = self.repo.as_ref()?;
+        info!("policy-updater: Diffing {} -> {}", from_rev, to_rev);
 
         let from_tree = repo.rev_parse_single(from_rev)?.object()?.peel_to_tree()?;
         let to_tree = repo.rev_parse_single(to_rev)?.object()?.peel_to_tree()?;
@@ -413,7 +411,7 @@ fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> 
     let vm_path = vm_root.join(vm_name);
     if !vm_path.exists() {
         anyhow::bail!(
-            "[POLICY_UPDATER] VM directory does not exist: {}",
+            "policy-updater: VM directory does not exist: {}",
             vm_path.display()
         );
     }
@@ -444,7 +442,7 @@ fn archive_policies_for_vm(vm_root: &Path, vm_name: &str, output_dir: &Path) -> 
     }
 
     tar.finish()?;
-    println!("[POLICY_UPDATER] Created {}", out_file_path.display());
+    println!("policy-updater: Created {}", out_file_path.display());
     Ok(())
 }
 
@@ -465,7 +463,7 @@ fn ensure_policy_cache(
         .map(|s| s.trim().to_string());
     if let Some(old) = &old_head {
         if old == new_head {
-            info!("[POLICY_UPDATER] Policy cache is up-to-date.");
+            info!("policy-updater: Policy cache is up-to-date.");
             return Ok(false);
         }
     }
@@ -491,7 +489,7 @@ fn ensure_policy_cache(
     /* Update policy cache head */
     let mut head_file = fs::File::create(head_file_path)?;
     head_file.write_all(new_head.as_bytes())?;
-    info!("[POLICY_UPDATER] Policy cache updated");
+    info!("policy-updater: Policy cache updated");
 
     Ok(true)
 }
@@ -521,7 +519,7 @@ fn update_vms(
                 let vmname = name.trim_end_matches(".tar.gz");
                 let _ =
                     push_vm_policy_updates(admin_service.clone(), &vmname, cache_dir, "", sha, "");
-                info!("[POLICY_UPDATER] Policy pushed to VM {}", name);
+                info!("policy-updater: Policy pushed to VM {}", name);
             }
         }
     }
@@ -541,7 +539,7 @@ pub fn push_vm_policy_updates(
     let cache_dir = cache_dir.to_path_buf();
 
     info!(
-        "[POLICY_UPDATER] Preparing policy update push for {}",
+        "policy-updater: Preparing policy update push for {}",
         vm_name
     );
 
@@ -563,12 +561,12 @@ pub fn push_vm_policy_updates(
 
         if let Err(e) = result {
             error!(
-                "[POLICY_UPDATER] Failed to push policy update to {}: {}",
+                "policy-updater: Failed to push policy update to {}: {}",
                 vm_name, e
             );
         } else {
             info!(
-                "[POLICY_UPDATER] Successfully pushed policy update for {}",
+                "policy-updater: Successfully pushed policy update for {}",
                 vm_name
             );
         }
@@ -584,29 +582,29 @@ fn process_policy_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let new_head = updater
         .current_head()
-        .ok_or("[POLICY_UPDATER] Failed to get current head.")?;
+        .ok_or("policy-updater: Failed to get current head.")?;
     let old_head = updater
         .old_head()
-        .ok_or("[POLICY_UPDATER] Failed to get old head.")?;
+        .ok_or("policy-updater: Failed to get old head.")?;
 
     info!(
-        "[POLICY_UPDATER] Policy update found! Fetched changes from {} to {}",
+        "policy-updater: Policy update found! Fetched changes from {} to {}",
         old_head, new_head
     );
 
     let changes = updater.get_change_set(&old_head.to_string(), &new_head.to_string())?;
 
     if !changes.is_empty() {
-        debug!("[POLICY_UPDATER] Changeset:\n{}", changes);
+        debug!("policy-updater: Changeset:\n{}", changes);
         let changed_vms = get_updated_vms(&changes);
         debug!(
-            "[POLICY_UPDATER] Changed vm-policies subdirs: {:?}",
+            "policy-updater: Changed vm-policies subdirs: {:?}",
             changed_vms
         );
 
         for vm in changed_vms {
             archive_policies_for_vm(vmpolicies, &vm, policycache)?;
-            info!("[POLICY_UPDATER] Created tar for {}", vm);
+            info!("policy-updater: Created tar for {}", vm);
 
             fs::File::create(shafile).and_then(|mut f| f.write_all(new_head.as_bytes()))?;
 
@@ -620,7 +618,7 @@ fn process_policy_update(
             );
         }
     } else {
-        info!("[POLICY_UPDATER] Update applied, but no VM was modified.");
+        info!("policy-updater: Update applied, but no VM was modified.");
     }
 
     Ok(())
@@ -634,9 +632,9 @@ pub async fn update_policies(
     branch: String,
 ) -> thread::JoinHandle<()> {
     let policyroot = policyroot.to_path_buf();
-    info!("[POLICY_UPDATER] Starting policy updater...");
+    info!("policy-updater: Starting policy updater...");
     thread::spawn(move || {
-        info!("[POLICY_UPDATER] Thread spawned successfully");
+        info!("policy-updater: Thread spawned successfully");
         let prbinding = policyroot.join("data");
         let policydir = prbinding.as_path();
         let vmpolicies = policydir.join("vm-policies");
@@ -648,7 +646,7 @@ pub async fn update_policies(
         let mut updater = match RepoUpdater::new(policy_url, branch, policydir) {
             Ok(u) => u,
             Err(e) => {
-                error!("[POLICY_UPDATER] Failed to initialize RepoUpdater: {}", e);
+                error!("policy-updater: Failed to initialize RepoUpdater: {}", e);
                 return;
             }
         };
@@ -658,30 +656,30 @@ pub async fn update_policies(
             .map(|h| h.to_string())
             .unwrap_or_else(|| "UNKNOWN".into());
 
-        info!("[POLICY_UPDATER] Current HEAD is: {}", head_str);
+        info!("policy-updater: Current HEAD is: {}", head_str);
 
         match ensure_policy_cache(&vmpolicies, policycache, &shafile, &head_str) {
             Ok(updated) => {
                 if updated {
                     update_vms(admin_service.clone(), policycache, &head_str);
                 } else {
-                    info!("[POLICY_UPDATER] Policy cache is up-to-date.");
+                    info!("policy-updater: Policy cache is up-to-date.");
                 }
             }
             Err(e) => {
-                error!("[POLICY_UPDATER] Policy cache update failed: {}", e);
+                error!("policy-updater: Policy cache update failed: {}", e);
             }
         }
 
         let wait_time = if poll_interval == Duration::ZERO {
-            Duration::from_secs(300)
+            Duration::from_secs(30)
         } else {
             poll_interval
         };
         let mut update_err = false;
 
         loop {
-            info!("[POLICY_UPDATER] --- Checking for policy updates ---");
+            info!("policy-updater: --- Checking for policy updates ---");
             match updater.get_update() {
                 Ok(true) => {
                     match process_policy_update(
@@ -697,15 +695,15 @@ pub async fn update_policies(
                             }
                         }
                         Err(e) => {
-                            error!("[POLICY_UPDATER] Policy update processing failed: {}", e);
+                            error!("policy-updater: Policy update processing failed: {}", e);
                             update_err = true;
                         }
                     }
                 }
-                Ok(false) => info!("[POLICY_UPDATER] Repository is already up-to-date."),
+                Ok(false) => info!("policy-updater: Repository is already up-to-date."),
                 Err(e) => {
                     error!(
-                        "[POLICY_UPDATER] An error occurred during get_update(): {}",
+                        "policy-updater: An error occurred during get_update(): {}",
                         e
                     );
                     update_err = true;
@@ -722,11 +720,11 @@ pub async fn update_policies(
                         if updated {
                             update_vms(admin_service.clone(), policycache, &new_head);
                         } else {
-                            info!("[POLICY_UPDATER] Policy cache is up-to-date.");
+                            info!("policy-updater: Policy cache is up-to-date.");
                         }
                     }
                     Err(e) => {
-                        error!("[POLICY_UPDATER] Policy cache update failed: {}", e);
+                        error!("policy-updater: Policy cache update failed: {}", e);
                     }
                 }
                 update_err = false;
