@@ -1,7 +1,7 @@
 #![allow(clippy::similar_names)]
 
 use super::entry::{Placement, RegistryEntry};
-use super::opa_server::OPAServer;
+use super::opa::OPAPolicyClient;
 use crate::pb::{
     self, ApplicationRequest, ApplicationResponse, Empty, ListGenerationsResponse, LocaleRequest,
     PolicyQueryRequest, PolicyQueryResponse, QueryListResponse, RegistryRequest, RegistryResponse,
@@ -52,8 +52,8 @@ pub struct AdminServiceImpl {
     tls_config: Option<TlsConfig>,
     locale_assigns: Mutex<Vec<pb::locale::LocaleAssignment>>,
     timezone: Mutex<String>,
-    policy_server_enabled: bool,
-    opa_server: Option<OPAServer>,
+    policy_admin_enabled: bool,
+    opa_client: Option<OPAPolicyClient>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,13 +82,13 @@ impl AdminService {
     pub fn new(
         use_tls: Option<TlsConfig>,
         monitoring: bool,
-        enable_policy_server: bool,
-        enable_opa_server: bool,
+        enable_policy_admin: bool,
+        enable_opa_client: bool,
     ) -> Self {
         let inner = Arc::new(AdminServiceImpl::new(
             use_tls,
-            enable_policy_server,
-            enable_opa_server,
+            enable_policy_admin,
+            enable_opa_client,
         ));
         let clone = inner.clone();
         if monitoring {
@@ -109,8 +109,8 @@ impl AdminServiceImpl {
     #[must_use]
     pub fn new(
         use_tls: Option<TlsConfig>,
-        enable_policy_server: bool,
-        enable_opa_server: bool,
+        enable_policy_admin: bool,
+        enable_opa_client: bool,
     ) -> Self {
         let timezone = std::fs::read_to_string(TIMEZONE_CONF)
             .ok()
@@ -131,8 +131,10 @@ impl AdminServiceImpl {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let opa = if enable_opa_server {
-            Some(OPAServer::new("http://localhost:8181/v1/data/".to_string()))
+        let opa = if enable_opa_client {
+            Some(OPAPolicyClient::new(
+                "http://localhost:8181/v1/data/".to_string(),
+            ))
         } else {
             None
         };
@@ -142,8 +144,8 @@ impl AdminServiceImpl {
             tls_config: use_tls,
             timezone: Mutex::new(timezone),
             locale_assigns: Mutex::new(locale_assigns),
-            policy_server_enabled: enable_policy_server,
-            opa_server: opa,
+            policy_admin_enabled: enable_policy_admin,
+            opa_client: opa,
         }
     }
 
@@ -207,13 +209,13 @@ impl AdminServiceImpl {
         Ok(())
     }
 
-    pub async fn send_query_to_opa_server(
+    pub async fn send_query_to_opa_client(
         &self,
         query: &str,
         policy_path: &str,
     ) -> anyhow::Result<String> {
-        if let Some(ref opa_server) = self.opa_server {
-            let result = opa_server.evaluate_query(query, policy_path).await?;
+        if let Some(ref opa_client) = self.opa_client {
+            let result = opa_client.evaluate_query(query, policy_path).await?;
             return Ok(result);
         } else {
             Ok("OPA Server not available".to_string())
@@ -228,19 +230,22 @@ impl AdminServiceImpl {
         new_rev: &str,
         change_set: &str,
     ) -> anyhow::Result<()> {
-        if !self.policy_server_enabled {
+        if !self.policy_admin_enabled {
             return Ok(());
         }
 
         let agent_service_name = VmName::Vm(vm_name).agent_service();
         info!(
-            "Pushing policy update to vm '{}' via agent '{}'",
+            "policy-admin: pushing policy update to vm '{}' via agent '{}'",
             vm_name, agent_service_name
         );
 
-        let endpoint = self
-            .agent_endpoint(&agent_service_name)
-            .with_context(|| format!("Failed to get endpoint for agent {}", agent_service_name))?;
+        let endpoint = self.agent_endpoint(&agent_service_name).with_context(|| {
+            format!(
+                "policy-admin: failed to get endpoint for agent {}",
+                agent_service_name
+            )
+        })?;
 
         let client = PolicyAgentClient::new(endpoint);
 
@@ -253,7 +258,7 @@ impl AdminServiceImpl {
 
         let updates = stream.map(move |chunk| {
             let chunk = chunk.unwrap();
-            debug!("Policy Chunk Size: {} bytes", chunk.len());
+            debug!("policy-admin: policy chunk size: {} bytes", chunk.len());
             pb::policyagent::StreamPolicyRequest {
                 archive_chunk: chunk.into(),
                 old_rev: old_rev.clone(),
@@ -261,10 +266,12 @@ impl AdminServiceImpl {
                 change_set: change_set.clone(),
             }
         });
-        client
-            .stream_policy(updates)
-            .await
-            .with_context(|| format!("Failed to send policy stream to vm '{}'", vm_name))?;
+        client.stream_policy(updates).await.with_context(|| {
+            format!(
+                "policy-admin: failed to send policy stream to vm '{}'",
+                vm_name
+            )
+        })?;
 
         Ok(())
     }
@@ -566,7 +573,7 @@ impl pb::admin_service_server::AdminService for AdminService {
 
             tokio::spawn(async move {
                 if let Ok(conn) = endpoint.connect().await {
-                    if inner_clone.policy_server_enabled {
+                    if inner_clone.policy_admin_enabled {
                         let policy_cache_path = std::path::PathBuf::from(format!(
                             "/etc/policies/.cache/{}.tar.gz",
                             vm_name
@@ -589,12 +596,18 @@ impl pb::admin_service_server::AdminService for AdminService {
                                 )
                                 .await
                             {
-                                warn!("Failed to push cached policy update to {}: {}", vm_name, e);
+                                warn!(
+                                    "policy-admin: failed to push cached policy update to {}: {}",
+                                    vm_name, e
+                                );
                             } else {
-                                info!("[Policy_SERVER] Pushed cached policy update to {}", vm_name);
+                                info!("policy-admin: pushed cached policy update to {}", vm_name);
                             }
                         } else {
-                            info!("No cached policy archive found for {}", vm_name);
+                            info!(
+                                "policy-admin: no cached policy archive found for {}",
+                                vm_name
+                            );
                         }
                     }
                     let mut client =
@@ -609,7 +622,7 @@ impl pb::admin_service_server::AdminService for AdminService {
                 }
             });
         }
-        info!("Responding with {res:?}");
+        info!("policy-admin: responding with {res:?}");
         Ok(Response::new(res))
     }
 
@@ -983,7 +996,7 @@ impl pb::admin_service_server::AdminService for AdminService {
         let path: &str = &inner.policy_path;
         let result = self
             .inner
-            .send_query_to_opa_server(&query, &path)
+            .send_query_to_opa_client(&query, &path)
             .await
             .map_err(|e| tonic::Status::internal(format!("OPA query failed: {}", e)))?;
 

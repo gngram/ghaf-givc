@@ -33,11 +33,14 @@ struct Cli {
     #[arg(long, env = "GIVC_MONITORING", default_value_t = true)]
     monitoring: bool,
 
-    #[arg(long, env = "POLICY_SERVER")]
-    policy_server: bool,
+    #[arg(long, env = "POLICY_ADMIN")]
+    policy_admin: bool,
 
-    #[arg(long, env = "POLICY_UPDATER")]
-    policy_updater: bool,
+    #[arg(long, env = "OPEN_POLICY_AGENT")]
+    open_policy_agent: bool,
+
+    #[arg(long, env = "POLICY_MONITOR")]
+    policy_monitor: bool,
 
     #[arg(long, env = "POLICY_URL")]
     policy_url: Option<PathBuf>,
@@ -88,8 +91,8 @@ async fn main() -> anyhow::Result<()> {
     let admin_service = admin::server::AdminService::new(
         tls,
         cli.monitoring,
-        cli.policy_server,
-        cli.policy_updater,
+        cli.policy_admin,
+        cli.open_policy_agent,
     );
     let admin_service_svc = admin::server::AdminServiceServer::new(admin_service.clone());
 
@@ -112,14 +115,13 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    info!("POLICY  agents starting....");
 
     let mut th_handle: Option<std::thread::JoinHandle<()>> = None;
-    if cli.policy_server {
-        if cli.policy_updater {
-            info!("POLICY  updater enabled....");
+    if cli.policy_admin {
+        if cli.policy_monitor {
+            info!("policy-monitor enabled....");
             th_handle = Some(
-                admin::policy_updater::update_policies(
+                admin::policy::start_policy_monitor(
                     admin_service.clone_inner(),
                     policy_url,
                     duration,
@@ -128,9 +130,9 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await,
             );
-            info!("POLICY  agents started....");
+            debug!("policy-monitor thread started....");
         } else {
-            info!("POLICY  updater disabled....");
+            info!("policy-monitor disabled....");
         }
     }
 

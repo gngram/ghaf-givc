@@ -62,13 +62,13 @@ in
           inherit (adminConfig) name;
           inherit (adminConfig) addresses;
           tls.enable = tls;
-          policyServer = {
+          policyAdmin = {
             enable = true;
             url = "http://github.com/gngram/policy-store.git";
             rev = "fb72918b7f4b919630703f281592d699e15cc9e5";
             sha256 = "sha256-vEzNchuoOFzU+u1w68gOvPAVepHVH535tPr7f5oSF8o=";
             opa.enable = true;
-            updater.enable = false;
+            monitor.enable = false;
           };
         };
       };

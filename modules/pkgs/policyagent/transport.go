@@ -42,11 +42,11 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 	policyBaseDir := "/etc/policies"
 	actionFile := "/etc/policy-agent/config.json"
 
-	log.Debugf("[PolicyAgent] Policy stream initiated by givc-admin.")
+	log.Debugf("policy-agent: policy stream initiated by givc-admin.")
 
 	tempFile, err := os.CreateTemp("", "policy-*.tar.gz")
 	if err != nil {
-		log.Errorf("[PolicyAgent] Failed to create temporary file: %v", err)
+		log.Errorf("policy-agent: failed to create temporary file: %v", err)
 		return err
 	}
 	defer os.Remove(tempFile.Name())
@@ -58,20 +58,20 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 	for {
 		in, err := stream.Recv()
 		if err == io.EOF {
-			log.Infof("[PolicyAgent] PolicyAgent received message from givc-admin.")
+			log.Infof("policy-agent: received message from givc-admin.")
 			break
 		}
 
 		if err != nil {
-			log.Errorf("[PolicyAgent] Error receiving from policy stream: %v", err)
+			log.Errorf("policy-agent: error receiving from policy stream: %v", err)
 			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 		}
 
 		archive_chunk := in.GetArchiveChunk()
 		if archive_chunk != nil {
-			log.Debugf("[PolicyAgent] Writing chunk of %d bytes to temporary file....", len(archive_chunk))
+			log.Debugf("policy-agent: writing chunk of %d bytes to temporary file....", len(archive_chunk))
 			if _, err := tempFile.Write(archive_chunk); err != nil {
-				log.Errorf("[PolicyAgent] Failed to write to temporary file: %v", err)
+				log.Errorf("policy-agent: failed to write to temporary file: %v", err)
 				return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 			}
 		}
@@ -90,11 +90,11 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 	}
 
 	if newRev == "" {
-		log.Errorf("[PolicyAgent] Spurious policy received")
+		log.Errorf("policy-agent: spurious policy received")
 		return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 	}
 
-	log.Debugf("[PolicyAgent] Policy update info: ChangeSet=%s OldRev=%s NewRev=%s", changeSet, oldRev, newRev)
+	log.Debugf("policy-agent: policy update info: ChangeSet=%s OldRev=%s NewRev=%s", changeSet, oldRev, newRev)
 
 	tempFile.Close()
 
@@ -114,40 +114,40 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		}
 	}
 
-	log.Debugf("[PolicyAgent] ExtractPolicy=%v", extractPolicy)
+	log.Debugf("policy-agent: ExtractiPolicy?=%v", extractPolicy)
 	if extractPolicy {
 		/* Uncompress policy tar ball */
-		log.Debugf("[PolicyAgent] Extracting policy archive %s to %s", tempFile.Name(), vmPolicyDir)
+		log.Debugf("policy-agent: extracting policy archive %s to %s", tempFile.Name(), vmPolicyDir)
 		if err := extractTarGz(tempFile.Name(), vmPolicyDir); err != nil {
-			log.Errorf("[PolicyAgent] Failed to extract policy archive: %v", err)
+			log.Errorf("policy-agent: failed to extract policy archive: %v", err)
 			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 		}
 
 		/* Update revision file */
 		err := os.WriteFile(revFile, []byte(newRev), 0644)
 		if err != nil {
-			log.Errorf("[PolicyAgent] Failed to write to sha file: %v", err)
+			log.Errorf("policy-agent: failed to write to sha file: %v", err)
 			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
 		}
 
 		/* Install only updated policies */
 		if !FileExists(actionFile) {
-			log.Infof("[PolicyAgent] Policy update ignored, policy install rules not found.")
+			log.Infof("policy-agent: policy update ignored, policy install rules not found.")
 			return stream.SendAndClose(&pb.Status{Status: "OK"})
 		}
 
 		installRules, err := LoadActionMap(actionFile)
 		if err != nil {
-			log.Errorf("[PolicyAgent] Error loading install rules: %v", err)
+			log.Errorf("policy-agent: error loading install rules: %v", err)
 		}
 
 		if err := ProcessChangeset(changeSet, vmPolicyDir, installRules); err != nil {
-			log.Errorf("[PolicyAgent] Error processing changeset: %v", err)
+			log.Errorf("policy-agent: error processing changeset: %v", err)
 		}
 
 	}
 
-	log.Infof("[PolicyAgent] Successfully extracted policies.")
+	log.Infof("policy-agent: successfully extracted policies.")
 	return stream.SendAndClose(&pb.Status{Status: "OK"})
 }
 
@@ -180,13 +180,13 @@ func extractTarGz(tarGzPath string, destDir string) error {
 		target := filepath.Join(destDir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
-			log.Debugf("[PolicyAgent] Creating directory: %s", target)
+			log.Debugf("policy-agent: creating directory: %s", target)
 			if err := os.MkdirAll(target, 0775); err != nil {
 				return err
 			}
 
 		case tar.TypeReg:
-			log.Debugf("[PolicyAgent] Extracting File: %s", target)
+			log.Debugf("policy-agent: extracting File: %s", target)
 			if err := os.MkdirAll(filepath.Dir(target), 0775); err != nil {
 				return err
 			}
@@ -239,7 +239,7 @@ func ProcessChangeset(changeset, policyDir string, actions ActionMap) error {
 	for name := range names {
 		action, ok := actions[name]
 		if !ok {
-			log.Infof("[PolicyAgent] No action found for %q, skipping\n", name)
+			log.Infof("policy-agent: no action found for %q, skipping\n", name)
 			continue
 		}
 
@@ -338,10 +338,10 @@ func installPolicy(action, targetPath string) error {
 	args := parts[1:]
 
 	cmd := exec.Command(cmdName, args...)
-	log.Infof("[PolicyAgent] Executing policy install command: %s %s", cmdName, strings.Join(args, " "))
+	log.Infof("policy-agent: executing policy install command: %s %s", cmdName, strings.Join(args, " "))
 	cmd.Run()
 	cmd.Wait()
-	log.Infof("[PolicyAgent] Policy install command completed with exit code %d", cmd.ProcessState.ExitCode())
+	log.Infof("policy-agent: policy install command completed with exit code %d", cmd.ProcessState.ExitCode())
 	if cmd.ProcessState.ExitCode() != 0 {
 		return fmt.Errorf("command exited with code %d", cmd.ProcessState.ExitCode())
 	}

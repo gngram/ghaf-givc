@@ -2,7 +2,7 @@
 pub mod OTA;
 
 pub mod entry;
-pub mod opa_server;
-pub mod policy_updater;
+pub mod opa;
+pub mod policy;
 pub mod registry;
 pub mod server;

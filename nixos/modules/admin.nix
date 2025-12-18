@@ -9,8 +9,6 @@
 }:
 let
   cfg = config.givc.admin;
-  opacfg = cfg.policyServer.opa;
-  updatercfg = cfg.policyServer.updater;
   inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) givc-admin;
   inherit (lib)
     mkOption
@@ -128,7 +126,7 @@ in
       '';
     };
 
-    policyServer = {
+    policyAdmin = {
       enable = mkEnableOption "Enable policy Server.";
       url = mkOption {
         type = types.str;
@@ -146,8 +144,8 @@ in
       opa = {
         enable = mkEnableOption "Start open policy agent service.";
       };
-      updater = {
-        enable = mkEnableOption "Enable policy updater.";
+      monitor = {
+        enable = mkEnableOption "Enable policy monitor.";
         ref = mkOption {
           type = types.str;
           description = "Tip(branch) of policy store to monitor for update. Default Rev must be predecessor of this.";
@@ -171,13 +169,13 @@ in
       }
     ];
 
-    users.users."${opaUser}" = mkIf opacfg.enable {
+    users.users."${opaUser}" = mkIf cfg.policyAdmin.opa.enable {
       isSystemUser = true;
       group = opaUser;
     };
-    users.groups."${opaUser}" = mkIf opacfg.enable { };
+    users.groups."${opaUser}" = mkIf cfg.policyAdmin.opa.enable { };
 
-    systemd.services.open-policy-agent = mkIf opacfg.enable {
+    systemd.services.open-policy-agent = mkIf cfg.policyAdmin.opa.enable {
       description = "Open Policy Agent";
       serviceConfig = {
         Type = "simple";
@@ -193,7 +191,7 @@ in
       };
     };
 
-    systemd.paths.open-policy-agent = mkIf opacfg.enable {
+    systemd.paths.open-policy-agent = mkIf cfg.policyAdmin.opa.enable {
       description = "Watch policy directory directory";
       pathConfig = {
         PathExists = "${opaPolicyDir}";
@@ -210,9 +208,9 @@ in
         );
 
         defaultPolicySrc = pkgs.fetchgit {
-          inherit (cfg.policyServer) url;
-          inherit (cfg.policyServer) rev;
-          inherit (cfg.policyServer) sha256;
+          inherit (cfg.policyAdmin) url;
+          inherit (cfg.policyAdmin) rev;
+          inherit (cfg.policyAdmin) sha256;
           leaveDotGit = true;
         };
 
@@ -247,7 +245,7 @@ in
               fi
             done
           fi
-          echo "${cfg.policyServer.rev}" > "$policyDir/.cache/.rev"
+          echo "${cfg.policyAdmin.rev}" > "$policyDir/.cache/.rev"
         '';
       in
       {
@@ -273,7 +271,7 @@ in
           "SUBTYPE" = "5";
           "TLS" = "${trivial.boolToString cfg.tls.enable}";
           "SERVICES" = "${concatStringsSep " " cfg.services}";
-          "POLICY_SERVER" = "${trivial.boolToString cfg.policyServer.enable}";
+          "POLICY_ADMIN" = "${trivial.boolToString cfg.policyAdmin.enable}";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";
@@ -284,16 +282,17 @@ in
           "RUST_BACKTRACE" = "1";
           "GIVC_LOG" = "givc=debug,info";
         }
-        // attrsets.optionalAttrs cfg.policyServer.enable {
-          "POLICY_UPDATER" = "${trivial.boolToString updatercfg.enable}";
-          "POLICY_URL" = "${cfg.policyServer.url}";
-          "POLICY_UPDATE_INTERVAL" = "${builtins.toString updatercfg.interval}";
-          "POLICY_UPDATE_REF" = "${updatercfg.ref}";
+        // attrsets.optionalAttrs cfg.policyAdmin.enable {
+          "POLICY_MONITOR" = "${trivial.boolToString cfg.policyAdmin.monitor.enable}";
+          "POLICY_URL" = "${cfg.policyAdmin.url}";
+          "POLICY_UPDATE_INTERVAL" = "${builtins.toString cfg.policyAdmin.monitor.interval}";
+          "POLICY_UPDATE_REF" = "${cfg.policyAdmin.monitor.ref}";
         };
       };
 
     networking.firewall.allowedTCPPorts = unique (
-      (map (addr: strings.toInt addr.port) tcpAddresses) ++ lib.optional opacfg.enable opaServerPort
+      (map (addr: strings.toInt addr.port) tcpAddresses)
+      ++ lib.optional cfg.policyAdmin.opa.enable opaServerPort
     );
   };
 }

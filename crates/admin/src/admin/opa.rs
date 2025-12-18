@@ -4,14 +4,14 @@ use tracing::{debug, error, info};
 
 #[derive(Debug)]
 
-pub struct OPAServer {
+pub struct OPAPolicyClient {
     url: String,
 }
 
-impl OPAServer {
+impl OPAPolicyClient {
     pub fn new(serverurl: String) -> Self {
         debug!(
-            "[OPAServer] Creating Interface to Policy Server with URL: {}",
+            "opa-policy-client: creating interface to policy server with url: {}",
             serverurl
         );
         Self { url: serverurl }
@@ -20,14 +20,20 @@ impl OPAServer {
     /* Sends request to OPA server and returns the response as a string */
     pub async fn request(&self, query: &str, policy_path: &str) -> anyhow::Result<String> {
         let opa_url = format!("{}{}", self.url, policy_path);
-        debug!("[OPAServer] Policy QUERY: {:?}, URL: {:?} ", query, opa_url);
+        debug!(
+            "opa-policy-client: OPA query: {:?}, url: {:?} ",
+            query, opa_url
+        );
 
         let client = Client::new();
 
         let res = match client.post(&opa_url).body(query.to_string()).send().await {
             Ok(response) => response,
             Err(e) => {
-                error!("[OPAServer] Failed to send request to OPA server: {}", e);
+                error!(
+                    "opa-policy-client: failed to send request to OPA server: {}",
+                    e
+                );
                 return Ok("{}".to_string());
             }
         };
@@ -35,7 +41,7 @@ impl OPAServer {
         let body_string = match res.text().await {
             Ok(text) => text,
             Err(e) => {
-                error!("[OPAServer] Failed to read body string: {}", e);
+                error!("opa-policy-client: failed to read body string: {}", e);
                 return Ok("{}".to_string());
             }
         };
@@ -46,16 +52,16 @@ impl OPAServer {
     /* Converts CLI queries to opa request and sends to OPA server */
     pub async fn evaluate_query(&self, query: &str, policy_path: &str) -> anyhow::Result<String> {
         if let Some(json_payload) = query.strip_prefix("json:") {
-            debug!("[OPAServer] Detected 'json:' prefix.");
+            debug!("opa-policy-client: detected 'json:' prefix.");
             let result = self.request(json_payload, policy_path).await?;
             Ok(result)
         } else if let Some(command_line) = query.strip_prefix("cmd:") {
-            debug!("[OPAServer] Detected 'cmd:' prefix.");
+            debug!("opa-policy-client: detected 'cmd:' prefix.");
             let result = self.handle_cmds(command_line).await?;
             Ok(result)
         } else {
             Err(anyhow!(
-                "[OPAServer] Unrecognized query prefix. Expected 'json:' or 'cmd:'"
+                "opa-policy-client: unrecognized query prefix, expected 'json:' or 'cmd:'"
             ))
         }
     }
@@ -69,14 +75,14 @@ impl OPAServer {
     /* Handles custom OPA commands */
     pub async fn handle_cmds(&self, cmdstr: &str) -> anyhow::Result<String> {
         if let Some((cmd, args)) = self.split_cmd_and_args(cmdstr).await {
-            info!("[OPAServer] Command:{}, Arguments: {}", cmd, args);
+            info!("opa-policy-client: command:{}, args: {}", cmd, args);
             match cmd {
                 "fetch" => self.run_fetch_rules(args).await,
                 /* Add other commands here */
-                _ => Err(anyhow!("[OPAServer] Unknown command: {}", cmd)),
+                _ => Err(anyhow!("opa-policy-client: unknown command: {}", cmd)),
             }
         } else {
-            Err(anyhow!("[OPAServer] Invalid command {}", cmdstr))
+            Err(anyhow!("opa-policy-client: invalid command {}", cmdstr))
         }
     }
 
