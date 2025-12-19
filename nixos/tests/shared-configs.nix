@@ -35,32 +35,43 @@ in
       virtualisation.writableStore = true;
       virtualisation.writableStoreUseTmpfs = true;
     };
-    tests-adminvm = {
-      imports = [
-        self.nixosModules.admin
-        ./snakeoil/gen-test-certs.nix
-      ];
+    tests-adminvm =
+      { ... }:
+      {
+        imports = [
+          self.nixosModules.admin
+          ./snakeoil/gen-test-certs.nix
+        ];
 
-      # TLS parameter
-      givc-tls-test = {
-        inherit (admin) name;
-        addresses = admin.addr;
-      };
+        # TLS parameter
+        givc-tls-test = {
+          inherit (admin) name;
+          addresses = admin.addr;
+        };
 
-      networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
-        {
-          address = addrs.adminvm;
-          prefixLength = 24;
-        }
-      ];
-      givc.admin = {
-        enable = true;
-        debug = true;
-        inherit (adminConfig) name;
-        inherit (adminConfig) addresses;
-        tls.enable = tls;
+        networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
+          {
+            address = addrs.adminvm;
+            prefixLength = 24;
+          }
+        ];
+
+        givc.admin = {
+          enable = true;
+          debug = true;
+          inherit (adminConfig) name;
+          inherit (adminConfig) addresses;
+          tls.enable = tls;
+          policyAdmin = {
+            enable = true;
+            url = "http://github.com/gngram/policy-store.git";
+            rev = "fb72918b7f4b919630703f281592d699e15cc9e5";
+            sha256 = "sha256-vEzNchuoOFzU+u1w68gOvPAVepHVH535tPr7f5oSF8o=";
+            opa.enable = true;
+            monitor.enable = false;
+          };
+        };
       };
-    };
     tests-hostvm = {
       imports = [
         self.nixosModules.host
@@ -226,6 +237,7 @@ in
             linger = true;
           };
         };
+
         networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
           {
             address = addrs.appvm;
@@ -265,6 +277,14 @@ in
               command = "/run/current-system/sw/bin/run-waypipe ${pkgs.foot}/bin/foot";
             }
           ];
+          policyAgent = {
+            enable = true;
+            policyConfig = {
+              "sample.conf" = {
+                action = "${pkgs.bash}/bin/bash --version";
+              };
+            };
+          };
         };
       };
     tests-updatevm = {
