@@ -39,6 +39,7 @@ func NewPolicyAgentServer() (*PolicyAgentServer, error) {
 }
 
 func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServer) error {
+	log.SetLevel(log.DebugLevel)
 	policyBaseDir := "/etc/policies"
 	actionFile := "/etc/policy-agent/config.json"
 
@@ -124,7 +125,7 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 		}
 
 		/* Update revision file */
-		err := os.WriteFile(revFile, []byte(newRev), 0644)
+		err := os.WriteFile(revFile, []byte(newRev), 0664)
 		if err != nil {
 			log.Errorf("policy-agent: failed to write to sha file: %v", err)
 			return stream.SendAndClose(&pb.Status{Status: "FAILED"})
@@ -153,6 +154,13 @@ func (s *PolicyAgentServer) StreamPolicy(stream pb.PolicyAgent_StreamPolicyServe
 
 /* Extracts a .tar.gz file to a destination directory. */
 func extractTarGz(tarGzPath string, destDir string) error {
+	/* Clean destination directory */
+	if err := os.RemoveAll(destDir); err != nil {
+		return fmt.Errorf("policy-agent: cleaning destination directory, error: %w", err)
+	}
+
+	/* Create destination directory */
+
 	file, err := os.Open(tarGzPath)
 	if err != nil {
 		return err
