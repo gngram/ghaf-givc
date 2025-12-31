@@ -12,6 +12,7 @@ use async_stream::try_stream;
 use futures_util::stream::StreamExt;
 use givc_common::query::Event;
 use regex::Regex;
+use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,9 +23,10 @@ use tracing::{debug, error, info, warn};
 pub use pb::admin_service_server::AdminServiceServer;
 
 use crate::admin::registry::Registry;
-use crate::policyagent_api::client::PolicyAgentClient;
+use crate::policyadmin_api::client::PolicyAdminClient;
 use crate::systemd_api::client::SystemDClient;
 use crate::types::{ServiceType, UnitType, VmType};
+use crate::utils::json::JsonNode;
 use crate::utils::naming::VmName;
 use crate::utils::tonic::{Stream, escalate};
 use givc_client::endpoint::{EndpointConfig, TlsConfig};
@@ -189,10 +191,8 @@ impl AdminServiceImpl {
     pub async fn push_policy_update(
         &self,
         vm_name: &str,
-        archive_path: &std::path::Path,
-        old_rev: &str,
-        new_rev: &str,
-        change_set: &str,
+        policy_file_path: &std::path::Path,
+        policy_metadata: &str,
     ) -> anyhow::Result<()> {
         if !self.policy_admin_enabled {
             return Ok(());
@@ -211,23 +211,16 @@ impl AdminServiceImpl {
             )
         })?;
 
-        let client = PolicyAgentClient::new(endpoint);
+        let client = PolicyAdminClient::new(endpoint);
 
-        let file = tokio::fs::File::open(archive_path).await?;
+        let file = tokio::fs::File::open(policy_file_path).await?;
         let stream = ReaderStream::new(file);
-
-        let old_rev = old_rev.to_string();
-        let new_rev = new_rev.to_string();
-        let change_set = change_set.to_string();
-
+        let metadata_json = policy_metadata.to_string();
         let updates = stream.map(move |chunk| {
             let chunk = chunk.unwrap();
-            debug!("policy-admin: policy chunk size: {} bytes", chunk.len());
-            pb::policyagent::StreamPolicyRequest {
-                archive_chunk: chunk.into(),
-                old_rev: old_rev.clone(),
-                new_rev: new_rev.clone(),
-                change_set: change_set.clone(),
+            pb::policyadmin::StreamPolicyRequest {
+                policy_chunk: chunk.into(),
+                metadata_json: metadata_json.clone(),
             }
         });
         client.stream_policy(updates).await.with_context(|| {
@@ -549,23 +542,39 @@ impl pb::admin_service_server::AdminService for AdminService {
                             let policy_rev = fs::read_to_string(rev_file)
                                 .ok()
                                 .map(|s| s.trim().to_string());
-
-                            if let Err(e) = inner_clone
-                                .push_policy_update(
-                                    &vm_name,
-                                    &policy_cache_path,
-                                    "",
-                                    policy_rev.as_deref().unwrap_or(""),
-                                    "",
-                                )
-                                .await
-                            {
-                                warn!(
-                                    "policy-admin: failed to push cached policy update to {}: {}",
-                                    vm_name, e
-                                );
-                            } else {
-                                info!("policy-admin: pushed cached policy update to {}", vm_name);
+                            let mut metadata = JsonNode::new();
+                            metadata.add_field(&["type"], json!("repo"));
+                            metadata
+                                .add_field(&["rev"], json!(policy_rev.as_deref().unwrap_or("")));
+                            metadata.add_field(&["base"], json!(""));
+                            metadata.add_field(&["changeset"], json!(""));
+                            match metadata.to_string() {
+                                Ok(metadata_str) => {
+                                    if let Err(e) = inner_clone
+                                        .push_policy_update(
+                                            &vm_name,
+                                            &policy_cache_path,
+                                            metadata_str.as_str(),
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "policy-admin: failed to push cached policy update to {}: {}",
+                                            vm_name, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "policy-admin: pushed cached policy update to {}",
+                                            vm_name
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "policy-manager: Failed to push policy update to {}: {}",
+                                        vm_name, e
+                                    );
+                                }
                             }
                         } else {
                             info!(
