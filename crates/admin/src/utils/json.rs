@@ -8,7 +8,7 @@
  */
 
 use anyhow::{Result, anyhow};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
 

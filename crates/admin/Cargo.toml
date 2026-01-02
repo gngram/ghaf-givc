@@ -12,6 +12,7 @@ async-channel = "2.3.1"
 async-fn-stream = "*"
 async-stream = "0.3"
 clap = { version = "4.5.52", features = ["derive", "env"] }
+crossbeam-channel = "0.5"
 futures-util = "0.3"
 flate2 = "1"
 gix = { version = "0.75", default-features = false, features = [
@@ -30,6 +31,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde_json = "1.0.145"
 serde = { version = "1.0.202", features = ["derive"] }
+sha2 = { version = "0.10.9" }
 tar = "0.4"
 tempfile = "3"
 tokio-stream = "0.1"

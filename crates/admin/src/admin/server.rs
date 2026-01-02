@@ -213,7 +213,11 @@ impl AdminServiceImpl {
 
         let client = PolicyAdminClient::new(endpoint);
 
-        let file = tokio::fs::File::open(policy_file_path).await?;
+        /* For safe streaming  */
+        let temp_path = policy_file_path.with_extension("tmp");
+        tokio::fs::copy(policy_file_path, &temp_path).await?;
+
+        let file = tokio::fs::File::open(&temp_path).await?;
         let stream = ReaderStream::new(file);
         let metadata_json = policy_metadata.to_string();
         let updates = stream.map(move |chunk| {
@@ -229,7 +233,7 @@ impl AdminServiceImpl {
                 vm_name
             )
         })?;
-
+        tokio::fs::remove_file(&temp_path).await?;
         Ok(())
     }
 
@@ -543,11 +547,11 @@ impl pb::admin_service_server::AdminService for AdminService {
                                 .ok()
                                 .map(|s| s.trim().to_string());
                             let mut metadata = JsonNode::new();
-                            metadata.add_field(&["type"], json!("repo"));
-                            metadata
+                            let _ = metadata.add_field(&["type"], json!("repo"));
+                            _ = metadata
                                 .add_field(&["rev"], json!(policy_rev.as_deref().unwrap_or("")));
-                            metadata.add_field(&["base"], json!(""));
-                            metadata.add_field(&["changeset"], json!(""));
+                            _ = metadata.add_field(&["base"], json!(""));
+                            _ = metadata.add_field(&["changeset"], json!(""));
                             match metadata.to_string() {
                                 Ok(metadata_str) => {
                                     if let Err(e) = inner_clone

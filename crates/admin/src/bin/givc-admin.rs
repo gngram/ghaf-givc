@@ -36,18 +36,8 @@ struct Cli {
     #[arg(long, env = "POLICY_ADMIN")]
     policy_admin: bool,
 
-    #[arg(long, env = "POLICY_MONITOR")]
-    policy_monitor: bool,
-
-    #[arg(long, env = "POLICY_URL")]
-    policy_url: Option<PathBuf>,
-
-    #[arg(long, env = "POLICY_UPDATE_REF")]
-    policy_ref: Option<PathBuf>,
-
-    #[arg(long, env = "POLICY_UPDATE_INTERVAL")]
-    policy_update_interval: Option<String>,
-
+    #[arg(long, env = "POLICY_CONFIG")]
+    policy_config: Option<PathBuf>,
     #[arg(
         long,
         env = "SERVICES",
@@ -94,38 +84,34 @@ async fn main() -> anyhow::Result<()> {
     let listener =
         tokio_listener::Listener::bind_multiple(&cli.listen, &sys_opts, &user_opts).await?;
 
-    let policy_url = cli
-        .policy_url
+    let policy_config = cli
+        .policy_config
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let duration = cli
-        .policy_update_interval
-        .map(|p| std::time::Duration::from_secs(p.to_string().parse().unwrap()))
-        .unwrap_or_default();
-    let branch = cli
-        .policy_ref
-        .as_ref()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
 
-    let mut th_handle: Option<std::thread::JoinHandle<()>> = None;
+    let mut th_handle: Option<tokio::task::JoinHandle<()>> = None;
+
     if cli.policy_admin {
-        if cli.policy_monitor {
-            info!("policy-monitor enabled....");
-            th_handle = Some(
-                admin::policy::start_policy_monitor(
-                    admin_service.clone_inner(),
-                    policy_url,
-                    duration,
-                    Path::new("/etc/policies"),
-                    branch,
-                )
-                .await,
-            );
-            debug!("policy-monitor thread started....");
-        } else {
-            info!("policy-monitor disabled....");
+        debug!("policy-admin: initializing policy manager....");
+        match admin::policy::init_policy_manager(
+            admin_service.clone_inner(),
+            Path::new("/etc/policies"),
+            Path::new(&policy_config),
+        )
+        .await
+        {
+            Ok(handle) => {
+                th_handle = Some(handle.expect("REASON"));
+                debug!("policy-admin: policy manager initialized....");
+                info!("policy-admin enabled.");
+            }
+            Err(e) => {
+                debug!("policy-admin: policy manager initialization failed....");
+                return Err(e);
+            }
         }
+    } else {
+        info!("policy-admin disabled.");
     }
 
     let _ = builder
@@ -135,9 +121,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     /* Cleanup policy monitor */
-    match th_handle {
-        Some(handle) => handle.join().unwrap(),
-        None => (),
+    if let Some(handle) = th_handle {
+        if let Err(e) = handle.await {
+            tracing::error!("Policy monitor task failed: {}", e);
+        }
     }
     Ok(())
 }

@@ -59,6 +59,32 @@ in
         inherit (adminConfig) name;
         inherit (adminConfig) addresses;
         tls.enable = tls;
+        policy-admin = {
+          enable = true;
+          resource = {
+            centralized = {
+              enable = true;
+              url = "https://github.com/gngram/policy-store.git";
+              ref = "test-policy";
+              poll_interval_secs = 30;
+              policies = {
+                "proxy-config" = {
+                  vms = [ "app-vm" ];
+                };
+              };
+            };
+            distributed = {
+              enable = false;
+              policies = {
+                "proxy-config" = {
+                  vms = [ "app-vm" ];
+                  url = "https://github.com/TII";
+                  poll_interval_secs = 30;
+                };
+              };
+            };
+          };
+        };
       };
     };
     tests-hostvm = {
