@@ -1,5 +1,6 @@
 use crate::admin::server;
 use crate::policyadmin_api::policy_repo::PolicyRepository;
+use crate::utils::json::JsonNode;
 use anyhow::Result;
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -9,39 +10,165 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Arc;
 use std::thread;
 use tar::Builder;
+use tokio::runtime::Runtime;
 use tracing::{debug, error, info};
 
-use crate::utils::json::JsonNode;
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use std::collections::HashMap;
+use std::thread::{self, JoinHandle};
 
-/* PolicyManager structure - manages policy updates and distribution */
+/// The message format containing two strings
+pub struct Policy {
+    pub metadata: String,
+    pub file: String,
+}
+
 pub struct PolicyManager {
-    vm_policies_path: PathBuf,
-    policy_cache_path: PathBuf,
-    sha_file_path: PathBuf,
+    policy_dir: PathBuf,
+    configs: JsonNode,
     admin_service: Arc<server::AdminServiceImpl>,
+    rt: Arc<Runtime>,
+    workers: HashMap<String, (Sender<Policy>, JoinHandle<()>)>,
 }
 
 impl PolicyManager {
-    pub fn new(policy_root: &Path, admin_service: Arc<server::AdminServiceImpl>) -> Result<Self> {
-        let policy_dir = policy_root.join("data");
-        let vm_policies_path = policy_dir.join("vm-policies");
-        let policy_cache_path = policy_root.join(".cache");
-        let sha_file_path = policy_cache_path.join(".rev");
+    pub fn new(
+        policy_path: &Path,
+        config_path: &Path,
+        admin_service: Arc<server::AdminServiceImpl>,
+    ) -> Result<Self> {
+        let configs = JsonNode::from_file(config_path)?;
+        let rt = Runtime::new().map_err(|e| anyhow!("Failed to create Tokio runtime: {e}"))?;
+        let rt = Arc::new(rt);
 
-        Ok(Self {
-            vm_policies_path,
-            policy_cache_path,
-            sha_file_path,
+        let mut instance = Self {
+            policy_path: policy_path.to_path_buf(),
+            configs,
             admin_service,
-        })
+            rt,
+            workers: HashMap::new(),
+        };
+
+        let policies = configs.get_keys(&["policies"]);
+        for policy in policies {
+            let vms = configs.get_keys(&["policies", &policy, "vms"]);
+            for vm in vms {
+                instance.add_worker(&vm);
+            }
+        }
+
+        Ok(instance)
     }
 
-    /* Returns vector of VMs which have been modified in policy update */
-    fn get_updated_vms(&self, changeset: &str) -> Vec<String> {
-        let mut dirs = HashSet::new();
+    pub fn add_worker(&mut self, vm: &str) {
+        if self.workers.contains_key(vm) {
+            return;
+        }
 
+        let (tx, rx) = unbounded::<Policy>();
+        let vmname = vm.to_string();
+        let vmname_for_thread = vmname.clone();
+        let rt_share = Arc::clone(&self.rt);
+
+        let handle = thread::spawn(move || {
+            Self::worker_handler(vmname_for_thread, rx, rt_share);
+        });
+
+        self.workers.insert(vmname, (tx, handle));
+    }
+
+    pub fn worker_handler(vm: String, rx: Receiver<Policy>, rt: Arc<Runtime>) {
+        println!("Worker [{}] started via member function.", vm);
+
+        while let Ok(msg) = rx.recv() {
+            println!(
+                "Worker [{}] processing: {} & {}",
+                vm, msg.metadata, msg.file
+            );
+            let mut metadata = JsonNode::new();
+
+            let result = rt.block_on(async {
+                admin_service
+                    .push_policy_update(&vm_name, &msg.file, &msg.metadata)
+                    .await
+            });
+
+            if let Err(e) = result {
+                error!(
+                    "policy-manager: Failed to push policy update to {}: {}",
+                    vm_name, e
+                );
+            } else {
+                info!(
+                    "policy-manager: Successfully pushed policy update for {}",
+                    vm_name
+                );
+            };
+        }
+        println!("Worker [{}] shutting down.", vm);
+    }
+
+    pub fn send_task(&self, vm: &str, a: String, b: String) -> Result<(), String> {
+        if let Some((tx, _)) = self.workers.get(vm) {
+            tx.send(Policy {
+                metadata: a,
+                file: b,
+            })
+            .map_err(|_| "Failed to send: Thread might have panicked".to_string())
+        } else {
+            Err("Worker not found".to_string())
+        }
+    }
+
+    pub fn update_vm(&self, vm_name: &str) -> Result<()> {
+        let policies = self.configs.get_keys(&["policies"]);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for policy in policies {
+            if fs::metadata(&self.policy_path.join(&policy)).is_ok() {
+                let vms = self.configs.get_keys(&["policies", &policy, "vms"]);
+                /* if vm_name is in vms */
+                if vms.contains(&vm_name) {
+                    for entry in fs::read_dir(&self.policy_path.join(&policy))? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        let mut metadata = JsonNode::new();
+                        metadata.add_field(&["file"], json!(entry.file_name().to_str()));
+                        metadata.add_field(&["name"], json!(vm));
+                        match metadata.to_string() {
+                            Ok(metadata_str) => {
+                                match self.send_task(vm_name, metadata_str, path.to_string()) {
+                                    Ok(_) => {
+                                        info!("Policy update sent successfully");
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to send policy update: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to serialize metadata: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /* Force update all VMs policy */
+    pub fn update_all_vms(&self) -> Result<()> {
+        for (vm, _) in self.workers.iter() {
+            self.update_vm(vm)?;
+        }
+        Ok(())
+    }
+
+    /* Sends policy update to vms  */
+    fn update_changeset_to_vms(&self, changeset: &str) -> Result<()> {
         for line in changeset.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -49,7 +176,7 @@ impl PolicyManager {
             }
 
             /*
-             * Expect git changeset line format like: "M  vm-policies/gui-vm/rules.json".
+             * Expect git changeset line format like: "M  vm-policies/<policy-name>/<policy-file>".
              * Split once on whitespace to drop the status part.
              */
             let mut parts = line.split_whitespace();
@@ -67,240 +194,28 @@ impl PolicyManager {
                 continue;
             }
 
-            /*
-             * Take the component immediately after "vm-policies/" to get the VM name.
-             * e.g. "vm-policies/gui-vm/rules.json" -> "gui-vm"
-             */
+            /* take the two components after "vm-policies/" to get the policy name and file name */
             let rest = &path[PREFIX.len()..];
-            if let Some(first_component) = rest.split('/').next() {
-                if !first_component.is_empty() {
-                    dirs.insert(first_component.to_string());
+            if let Some(policy_name) = rest.split('/').next() {
+                /* Get second component */
+                if let Some(file_name) = rest.split('/').nth(1) {
+                    let file_path = self.policy_path.join(policy_name).join(file_name);
+                    if fs::metadata(&file_path).is_ok() {
+                        let vms = self.configs.get_keys(&["policies", &policy_name, "vms"]);
+                        for vm in vms {
+                            match self.send_task(vm, policy_name.to_string(), file_path.to_string())
+                            {
+                                Ok(_) => {
+                                    info!("Policy update sent successfully");
+                                }
+                                Err(e) => {
+                                    error!("Failed to send policy update: {}", e);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-
-        /* Sort and return the result */
-        let mut result: Vec<String> = dirs.into_iter().collect();
-        result.sort();
-        result
-    }
-
-    /* Create a tar.gz archive of the VM policies and store in output_dir */
-    fn archive_policies_for_vm(&self, vm_name: &str) -> Result<()> {
-        let vm_path = self.vm_policies_path.join(vm_name);
-        if !vm_path.exists() {
-            anyhow::bail!(
-                "policy-manager: VM directory does not exist: {}",
-                vm_path.display()
-            );
-        }
-
-        /* Return if vm_root doesn't exist */
-        if !self.vm_policies_path.exists() {
-            return Ok(());
-        }
-
-        let out_file_path = self.policy_cache_path.join(format!("{}.tar.gz", vm_name));
-        let tar_gz = fs::File::create(&out_file_path)?;
-        let enc = GzEncoder::new(tar_gz, Compression::default());
-        let mut tar = Builder::new(enc);
-
-        /* Iterate all files recursively inside vm-policies/<vmname> */
-        for entry in walkdir::WalkDir::new(&vm_path) {
-            let entry = entry?;
-            let path = entry.path();
-
-            /* Skip the root folder itself */
-            if path == vm_path {
-                continue;
-            }
-
-            let relative_path = path.strip_prefix(&vm_path)?;
-
-            /* Add the file to the tar with ONLY the relative path */
-            tar.append_path_with_name(path, relative_path)?;
-        }
-
-        tar.finish()?;
-        println!("policy-manager: Created {}", out_file_path.display());
-        Ok(())
-    }
-
-    /* Ensures that policy cache is up-to-date */
-    pub fn ensure_policy_cache(&self, new_head: &str) -> Result<bool> {
-        if !self.vm_policies_path.exists() {
-            return Ok(false);
-        }
-
-        /* If policy cache head is up-to-date return early */
-        let old_head = fs::read_to_string(&self.sha_file_path)
-            .ok()
-            .map(|s| s.trim().to_string());
-
-        if let Some(old) = &old_head {
-            if old == new_head {
-                info!("policy-manager: Policy cache is up-to-date.");
-                return Ok(false);
-            }
-        }
-
-        if self.policy_cache_path.exists() {
-            fs::remove_dir_all(&self.policy_cache_path)?;
-        }
-        fs::create_dir_all(&self.policy_cache_path)?;
-
-        /* Archive each VM policy and store in cache */
-        for entry in fs::read_dir(&self.vm_policies_path)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-
-            if file_type.is_dir() {
-                let vm_name = entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|os| anyhow::anyhow!("Non-UTF8 VM directory name: {:?}", os))?;
-
-                self.archive_policies_for_vm(&vm_name)?;
-            }
-        }
-
-        /* Update policy cache head */
-        let mut head_file = fs::File::create(&self.sha_file_path)?;
-        head_file.write_all(new_head.as_bytes())?;
-        info!("policy-manager: Policy cache updated");
-
-        Ok(true)
-    }
-
-    /* Force update all VMs policy */
-    pub fn update_all_vms(&self, sha: &str) -> Result<()> {
-        if !self.policy_cache_path.exists() {
-            return Ok(());
-        }
-
-        for entry in fs::read_dir(&self.policy_cache_path)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-
-            if !file_type.is_dir() {
-                let name = entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|os| anyhow::anyhow!("Non-UTF8 VM directory name: {:?}", os))?;
-
-                if name.ends_with(".tar.gz") {
-                    let vmname = name.trim_end_matches(".tar.gz");
-                    self.push_vm_policy_updates(vmname, "", sha, "");
-                    info!("policy-manager: Policy pushed to VM {}", name);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /* Pushes policy update to VM policyAdmin */
-    pub fn push_vm_policy_updates(
-        &self,
-        vm_name: &str,
-        old_rev: &str,
-        new_rev: &str,
-        change_set: &str,
-    ) {
-        info!(
-            "policy-manager: Preparing policy update push for {}",
-            vm_name
-        );
-
-        let admin_service = self.admin_service.clone();
-        let old = old_rev.to_string();
-        let new = new_rev.to_string();
-        let changes = change_set.to_string();
-        let policy_archive = self.policy_cache_path.join(format!("{}.tar.gz", vm_name));
-        let vm_name = vm_name.to_string();
-
-        thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let mut metadata = JsonNode::new();
-            metadata.add_field(&["type"], json!("repo"));
-            metadata.add_field(&["rev"], json!(new));
-            metadata.add_field(&["base"], json!(old));
-            metadata.add_field(&["changeset"], json!(changes));
-            match metadata.to_string() {
-                Ok(metadata_str) => {
-                    let result = rt.block_on(async {
-                        admin_service
-                            .push_policy_update(&vm_name, &policy_archive, &metadata_str)
-                            .await
-                    });
-
-                    if let Err(e) = result {
-                        error!(
-                            "policy-manager: Failed to push policy update to {}: {}",
-                            vm_name, e
-                        );
-                    } else {
-                        info!(
-                            "policy-manager: Successfully pushed policy update for {}",
-                            vm_name
-                        );
-                    };
-                }
-                Err(e) => {
-                    error!(
-                        "policy-manager: Failed to push policy update to {}: {}",
-                        vm_name, e
-                    );
-                }
-            }
-        });
-    }
-
-    /* Process policy update - archive changed VMs and push updates */
-    pub fn process_policy_update(
-        &self,
-        updater: &mut PolicyRepository,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let new_head = updater
-            .current_head()
-            .ok_or("policy-manager: Failed to get current head.")?;
-        let old_head = updater
-            .old_head()
-            .ok_or("policy-manager: Failed to get old head.")?;
-
-        info!(
-            "policy-manager: Policy update found! Fetched changes from {} to {}",
-            old_head, new_head
-        );
-
-        let changes = updater.get_change_set(&old_head.to_string(), &new_head.to_string())?;
-
-        if !changes.is_empty() {
-            debug!("policy-manager: Changeset:\n{}", changes);
-            let changed_vms = self.get_updated_vms(&changes);
-            debug!(
-                "policy-manager: Changed vm-policies subdirs: {:?}",
-                changed_vms
-            );
-
-            for vm in changed_vms {
-                self.archive_policies_for_vm(&vm)?;
-                info!("policy-manager: Created tar for {}", vm);
-
-                fs::File::create(&self.sha_file_path)
-                    .and_then(|mut f| f.write_all(new_head.as_bytes()))?;
-
-                self.push_vm_policy_updates(
-                    &vm,
-                    &old_head.to_string(),
-                    &new_head.to_string(),
-                    &changes,
-                );
-            }
-        } else {
-            info!("policy-manager: Update applied, but no VM was modified.");
-        }
-
-        Ok(())
     }
 }

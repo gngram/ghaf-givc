@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
         if cli.policy_monitor {
             info!("policy-monitor enabled....");
             th_handle = Some(
-                admin::policy::start_policy_monitor(
+                admin::policy::start_policy_repo_monitor(
                     admin_service.clone_inner(),
                     policy_url,
                     duration,
