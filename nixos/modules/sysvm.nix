@@ -36,6 +36,7 @@ in
 {
   imports = [
     ./notifier.nix
+    ./spire.nix
   ];
 
   options.givc.sysvm = {

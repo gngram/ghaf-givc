@@ -59,6 +59,9 @@ let
       { };
 in
 {
+  imports = [
+    ./spire.nix
+  ];
   options.givc.admin = {
     enable = mkOption {
       type = types.bool;
@@ -247,6 +250,100 @@ in
       }
     ];
 
+    # --- SPIRE SERVER CONFIG ---
+    givc.spire-server = {
+      enable = true;
+      trustDomain = "ghaf.givc";
+      bindAddress = "0.0.0.0";
+    };
+
+    # --- BOOTSTRAP SERVICE ---
+    systemd.services.spire-bootstrap =
+      let
+        entryList = [
+          # --- appvm workload (givc-agent) ---
+          {
+            spiffeID = "spiffe://ghaf.givc/givc-agent";
+            parentID = "spiffe://ghaf.givc/appvm";
+            selectors = [ "unix:uid:1000" ]; # appuser
+            isNode = false;
+          }
+          # --- guivm workload (givc-agent) ---
+          {
+            spiffeID = "spiffe://ghaf.givc/givc-agent";
+            parentID = "spiffe://ghaf.givc/guivm";
+            selectors = [ "unix:uid:1000" ]; # appuser
+            isNode = false;
+          }
+        ];
+        # 2. Write this list to a JSON file in the Nix Store
+        entriesJson = pkgs.writeText "spire-entries.json" (builtins.toJSON entryList);
+      in
+      {
+        description = "Bootstrap SPIRE Entries from Nix Config";
+        wantedBy = [ "multi-user.target" ];
+
+        # Run only after the server is up
+        after = [ "spire-server.service" ];
+        requires = [ "spire-server.service" ];
+
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+
+        # Make tools available
+        path = [
+          pkgs.spire
+          pkgs.jq
+        ];
+
+        script = ''
+          # 1. Wait for the SPIRE Server Socket
+          echo "Waiting for SPIRE Server socket..."
+          while [ ! -S /tmp/spire-server/private/api.sock ]; do sleep 1; done
+
+          echo "Applying entries from ${entriesJson}..."
+
+          # 2. Iterate over the JSON list
+          cat ${entriesJson} | jq -c '.[]' | while read entry; do
+
+            # Parse fields
+            SPIFFE_ID=$(echo $entry | jq -r .spiffeID)
+            PARENT_ID=$(echo $entry | jq -r .parentID)
+            # Join multiple selectors with " -selector " flag
+            SELECTORS=$(echo $entry | jq -r '.selectors | join(" -selector ")')
+            IS_NODE=$(echo $entry | jq -r .isNode)
+
+            # 3. Check if entry already exists (Idempotency)
+            # If 'entry show' succeeds, we skip to avoid errors
+            CHECK_CMD="-spiffeID $SPIFFE_ID -selector $SELECTORS"
+            if [ "$IS_NODE" = "false" ]; then
+              CHECK_CMD="$CHECK_CMD -parentID $PARENT_ID"
+            fi
+
+            if spire-server entry show $CHECK_CMD > /dev/null 2>&1; then
+              echo "Entry $SPIFFE_ID already exists. Skipping."
+              continue
+            fi
+
+            # 4. Construct command
+            CMD="-spiffeID $SPIFFE_ID -selector $SELECTORS"
+            if [ "$IS_NODE" = "true" ]; then
+              CMD="$CMD -node"
+            else
+              CMD="$CMD -parentID $PARENT_ID"
+            fi
+
+            # 5. Execute registration
+            echo "Registering: $SPIFFE_ID"
+            spire-server entry create $CMD
+          done
+
+          echo "Bootstrap complete."
+        '';
+      };
+
     systemd.services.givc-admin =
       let
         args = concatStringsSep " " (
@@ -318,6 +415,8 @@ in
           "GIVC_LOG" = "givc=debug,info";
         };
       };
-    networking.firewall.allowedTCPPorts = unique (map (addr: strings.toInt addr.port) tcpAddresses);
+    networking.firewall.allowedTCPPorts = unique (map (addr: strings.toInt addr.port) tcpAddresses) ++ [
+      8081
+    ];
   };
 }

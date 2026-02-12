@@ -142,6 +142,12 @@ in
           name = "gui-vm";
           addresses = addrs.guivm;
         };
+        givc.spire-agent = {
+          enable = true;
+          serverAddress = "192.168.101.10"; # IP of Admin VM
+          joinToken = "token-guivm"; # Token matching your bootstrap entry
+          trustDomain = "ghaf.givc";
+        };
         # Setup users and keys
         users.groups.ghaf = { };
         users.users = {
@@ -242,6 +248,12 @@ in
             openssh.authorizedKeys.keys = [ snakeOilPublicKey ];
             linger = true;
           };
+        };
+        givc.spire-agent = {
+          enable = true;
+          serverAddress = "192.168.101.10"; # IP of Admin VM
+          joinToken = "token-appvm"; # Token matching your bootstrap entry
+          trustDomain = "ghaf.givc";
         };
         networking.interfaces.eth1.ipv4.addresses = lib.mkOverride 0 [
           {

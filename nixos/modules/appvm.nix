@@ -37,6 +37,9 @@ let
     ;
 in
 {
+  imports = [
+    ./spire.nix
+  ];
   options.givc.appvm = {
     enable = mkEnableOption "GIVC appvm agent module";
 
