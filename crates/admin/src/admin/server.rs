@@ -47,7 +47,7 @@ pub enum State {
 }
 
 #[derive(Debug)]
-pub struct AdminServiceImpl {
+struct AdminServiceImpl {
     registry: Registry,
     state: State, // FIXME: use sysfsm statemachine
     tls_config: Option<TlsConfig>,
@@ -78,8 +78,13 @@ impl Validator {
 }
 
 impl AdminService {
-    #[must_use]
-    pub async fn new(
+    /**
+     * Create new `AdminService` instance
+     *
+     * # Errors
+     * Fails if policy setup fails.
+     */
+    pub fn new(
         use_tls: Option<TlsConfig>,
         monitoring: bool,
         enable_policy_admin: bool,
@@ -96,15 +101,14 @@ impl AdminService {
 
         inner
             .clone()
-            .setup_policy_admin(policy_store, policy_config)
-            .await?;
+            .setup_policy_admin(policy_store, policy_config)?;
         Ok(Self { inner })
     }
 }
 
 impl AdminServiceImpl {
     #[must_use]
-    pub fn new(use_tls: Option<TlsConfig>, enable_policy_admin: bool) -> Self {
+    fn new(use_tls: Option<TlsConfig>, enable_policy_admin: bool) -> Self {
         let timezone = std::fs::read_to_string(TIMEZONE_CONF)
             .ok()
             .and_then(|l| l.lines().next().map(ToOwned::to_owned))
@@ -134,7 +138,7 @@ impl AdminServiceImpl {
         }
     }
 
-    pub async fn setup_policy_admin(
+    fn setup_policy_admin(
         self: &Arc<Self>,
         policy_store: Option<std::path::PathBuf>,
         policy_config: Option<String>,
@@ -149,7 +153,7 @@ impl AdminServiceImpl {
             Box::pin(async move { service.push_policy_update(&vm, &path, &policy).await })
         });
 
-        run_policy_admin(policy_store, policy_config, callback).await?;
+        run_policy_admin(policy_store, policy_config, callback)?;
         Ok(())
     }
 
@@ -183,12 +187,12 @@ impl AdminServiceImpl {
         })
     }
 
-    pub(crate) fn agent_endpoint(&self, name: &str) -> anyhow::Result<EndpointConfig> {
+    fn agent_endpoint(&self, name: &str) -> anyhow::Result<EndpointConfig> {
         let reentry = self.registry.by_name(name)?;
         self.endpoint(&reentry)
     }
 
-    pub(crate) fn app_entries(&self, name: &str) -> anyhow::Result<Vec<String>> {
+    fn app_entries(&self, name: &str) -> anyhow::Result<Vec<String>> {
         if name.contains('@') {
             let list = self.registry.find_names(name)?;
             Ok(list)
@@ -197,7 +201,7 @@ impl AdminServiceImpl {
         }
     }
 
-    pub(crate) async fn get_remote_status(
+    async fn get_remote_status(
         &self,
         entry: &RegistryEntry,
     ) -> anyhow::Result<crate::types::UnitStatus> {
@@ -206,7 +210,7 @@ impl AdminServiceImpl {
         client.get_remote_status(entry.name.clone()).await
     }
 
-    pub(crate) async fn send_system_command(&self, name: String) -> anyhow::Result<()> {
+    async fn send_system_command(&self, name: String) -> anyhow::Result<()> {
         let endpoint = self.host_endpoint()?;
         let client = SystemDClient::new(endpoint);
         client.start_remote(name).await?;
@@ -221,7 +225,7 @@ impl AdminServiceImpl {
         Ok(response.into_inner())
     }
 
-    pub async fn push_policy_update(
+    async fn push_policy_update(
         &self,
         vm_name: &str,
         policy_file_path: &std::path::Path,
@@ -238,10 +242,7 @@ impl AdminServiceImpl {
         );
 
         let endpoint = self.agent_endpoint(&agent_service_name).with_context(|| {
-            format!(
-                "policy-admin: failed to get endpoint for agent {}",
-                agent_service_name
-            )
+            format!("policy-admin: failed to get endpoint for agent {agent_service_name}")
         })?;
 
         let client = PolicyAdminClient::new(endpoint);
@@ -256,11 +257,7 @@ impl AdminServiceImpl {
         result
     }
 
-    pub(crate) async fn start_unit_on_vm(
-        &self,
-        unit: &str,
-        vmname: &str,
-    ) -> anyhow::Result<String> {
+    async fn start_unit_on_vm(&self, unit: &str, vmname: &str) -> anyhow::Result<String> {
         let vmservice = VmName::Vm(vmname).agent_service();
 
         /* Return error if the vm is not registered */
@@ -292,7 +289,7 @@ impl AdminServiceImpl {
         }
     }
 
-    pub(crate) async fn start_vm(&self, name: &str) -> anyhow::Result<()> {
+    async fn start_vm(&self, name: &str) -> anyhow::Result<()> {
         let endpoint = self.host_endpoint()?;
         let client = SystemDClient::new(endpoint);
 
@@ -325,7 +322,7 @@ impl AdminServiceImpl {
         Ok(())
     }
 
-    pub(crate) async fn get_unit_status(
+    async fn get_unit_status(
         &self,
         vm_service: String,
         unit_name: String,
@@ -345,7 +342,7 @@ impl AdminServiceImpl {
         }
     }
 
-    pub(crate) async fn handle_error(&self, entry: RegistryEntry) -> anyhow::Result<()> {
+    async fn handle_error(&self, entry: RegistryEntry) -> anyhow::Result<()> {
         info!(
             "Handling error for {} vm type {} service type {}",
             entry.name, entry.r#type.vm, entry.r#type.service
@@ -409,7 +406,7 @@ impl AdminServiceImpl {
         Ok(())
     }
 
-    pub async fn monitor(&self) {
+    async fn monitor(&self) {
         use tokio::time::{MissedTickBehavior, interval};
         let mut watch = interval(Duration::from_secs(5));
         watch.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -432,7 +429,7 @@ impl AdminServiceImpl {
         self.registry.register(entry);
     }
 
-    pub(crate) async fn start_app(&self, req: ApplicationRequest) -> anyhow::Result<String> {
+    async fn start_app(&self, req: ApplicationRequest) -> anyhow::Result<String> {
         if self.state != State::VmsRegistered {
             info!("not all required system-vms are registered");
         }
@@ -483,7 +480,7 @@ impl AdminServiceImpl {
         Ok(remote_name)
     }
 
-    pub(crate) async fn notify_user(
+    async fn notify_user(
         &self,
         vm_name: String,
         notification: pb::notify::UserNotification,
