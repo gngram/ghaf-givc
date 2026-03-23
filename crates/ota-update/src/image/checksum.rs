@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use memmap2::MmapOptions;
@@ -16,13 +16,13 @@ const CHUNK_SIZE: usize = 64 * 1024 * 1024;
 /// and is significantly faster than small async read loops in our measurements.
 pub(crate) async fn read_sha256(path: &Path) -> anyhow::Result<[u8; 32]> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || read_sha256_blocking(path))
+    tokio::task::spawn_blocking(move || read_sha256_blocking(&path))
         .await
         .context("checksum task failed")?
 }
 
-fn read_sha256_blocking(path: PathBuf) -> anyhow::Result<[u8; 32]> {
-    let file = std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?;
+fn read_sha256_blocking(path: &Path) -> anyhow::Result<[u8; 32]> {
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
 
     // SAFETY: Mapping a read-only file descriptor for read-only access.
     // Concurrent file modification may change hash determinism, but not memory safety.
