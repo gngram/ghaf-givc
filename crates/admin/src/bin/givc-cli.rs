@@ -67,6 +67,18 @@ enum StartSub {
     },
 }
 
+impl StartSub {
+    async fn start(self, admin: AdminClient) -> anyhow::Result<()> {
+        let response = match self {
+            StartSub::App { app, vm, args } => admin.start_app(app, vm, args).await?,
+            StartSub::Vm { vm } => admin.start_vm(vm).await?,
+            StartSub::Service { servicename, vm } => admin.start_service(servicename, vm).await?,
+        };
+        println!("{response:?}");
+        Ok(())
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum UpdateSub {
     Query(QueryUpdates),
@@ -323,6 +335,20 @@ async fn notify_user(admin: AdminClient, notification: Notification) -> anyhow::
     Ok(())
 }
 
+async fn sysinfo(admin: AdminClient) -> anyhow::Result<()> {
+    let status = admin.sysinfo().await?;
+    println!("Ghaf Version: {}", status.ghaf_version);
+    println!(
+        "Secure Boot: {}",
+        optional_bool_to_display(status.secure_boot)
+    );
+    println!(
+        "Disk Encryption: {}",
+        optional_bool_to_display(status.disk_encrypted)
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     givc::trace_init()?;
@@ -354,16 +380,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Test { test } => test.handle(admin).await?,
-        Commands::Start { start } => {
-            let response = match start {
-                StartSub::App { app, vm, args } => admin.start_app(app, vm, args).await?,
-                StartSub::Vm { vm } => admin.start_vm(vm).await?,
-                StartSub::Service { servicename, vm } => {
-                    admin.start_service(servicename, vm).await?
-                }
-            };
-            println!("{response:?}");
-        }
+        Commands::Start { start } => start.start(admin).await?,
         Commands::Stop { app } => admin.stop(app).await?,
         Commands::Pause { app } => admin.pause(app).await?,
         Commands::Resume { app } => admin.resume(app).await?,
@@ -371,18 +388,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Commands::Poweroff {} => admin.poweroff().await?,
         Commands::Suspend {} => admin.suspend().await?,
         Commands::Wakeup {} => admin.wakeup().await?,
-        Commands::Sysinfo {} => {
-            let status = admin.sysinfo().await?;
-            println!("Ghaf Version: {}", status.ghaf_version);
-            println!(
-                "Secure Boot: {}",
-                optional_bool_to_display(status.secure_boot)
-            );
-            println!(
-                "Disk Encryption: {}",
-                optional_bool_to_display(status.disk_encrypted)
-            );
-        }
+        Commands::Sysinfo {} => sysinfo(admin).await?,
 
         Commands::Query {
             by_type,

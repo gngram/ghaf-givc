@@ -140,7 +140,7 @@ impl Runtime {
     }
 
     /// Create empty root + verity LVs sized for the manifest images,
-    /// falling back to the active slot sizes if unpacked_size is not set.
+    /// falling back to the active slot sizes if `unpacked_size` is not set.
     fn create_empty_slot(&self, manifest: &Manifest) -> Result<(SlotGroup, Vec<Pipeline>)> {
         let active = self.active_slot()?;
 
