@@ -320,7 +320,7 @@ in
         TimeoutStopSec = 5;
         RestartSec = 1;
       };
-      path = [ pkgs.dbus ];
+      path = [ pkgs.dbus ] ++ lib.optional cfg.capabilities.ctap.enable pkgs.qubes-ctap;
     };
     networking.firewall.allowedTCPPorts =
       let
