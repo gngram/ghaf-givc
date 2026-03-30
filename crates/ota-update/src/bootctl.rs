@@ -9,6 +9,14 @@ use tokio::process::Command;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BootctlAddon {
+    pub global_addon: Option<PathBuf>,
+    pub local_addon: Option<PathBuf>,
+    pub options: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BootctlItem {
     pub r#type: String,
     pub source: String,
@@ -29,7 +37,7 @@ pub struct BootctlItem {
     pub is_default: bool,
     #[serde(default)]
     pub is_selected: bool,
-    pub addon: Option<String>, // FIXME: didn't know real type of value. it == null in my experiments
+    pub addons: Option<Vec<BootctlAddon>>,
     pub cmdline: String,
 }
 
