@@ -23,8 +23,11 @@ pub struct BootctlItem {
     pub options: String,
     pub linux: PathBuf,
     pub initrd: Option<Vec<PathBuf>>,
+    #[serde(default)]
     pub is_reported: bool,
+    #[serde(default)]
     pub is_default: bool,
+    #[serde(default)]
     pub is_selected: bool,
     pub addon: Option<String>, // FIXME: didn't know real type of value. it == null in my experiments
     pub cmdline: String,
@@ -90,4 +93,38 @@ pub fn find_init(boot_info: &BootctlItem) -> Option<&Path> {
         .split_whitespace()
         .find_map(|init| init.strip_prefix("init="))
         .map(Path::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bootctl;
+
+    #[test]
+    fn parse_bootctl_defaults_missing_status_flags() {
+        let json = r#"
+[
+    {
+        "type": "type1",
+        "source": "esp",
+        "id": "nixos-generation-1.conf",
+        "path": "/boot/loader/entries/nixos-generation-1.conf",
+        "root": "/boot",
+        "title": "NixOS",
+        "showTitle": "NixOS",
+        "sortKey": "nixos",
+        "version": "Generation 1",
+        "options": "init=/nix/store/test/init root=fstab",
+        "linux": "/EFI/nixos/linux.efi",
+        "cmdline": "init=/nix/store/test/init root=fstab"
+    }
+]
+"#;
+
+        let parsed = parse_bootctl(json).expect("bootctl JSON should parse");
+
+        assert_eq!(parsed.len(), 1);
+        assert!(!parsed[0].is_reported);
+        assert!(!parsed[0].is_default);
+        assert!(!parsed[0].is_selected);
+    }
 }
