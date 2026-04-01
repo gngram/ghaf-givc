@@ -89,7 +89,9 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     pkgs.protobuf
     pkgs.protoc-gen-doc
-    pkgs.gomarkdoc
+    (pkgs.gomarkdoc.overrideAttrs (_: {
+      doCheck = false;
+    }))
   ];
 
   dontConfigure = true;
