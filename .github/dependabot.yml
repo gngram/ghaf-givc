@@ -1,19 +1,39 @@
 # SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
 # SPDX-License-Identifier: Apache-2.0
 
+---
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+    groups:
+      cargo-patches:
+        patterns:
+          - "*"
+        update-types:
+          - patch
 
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: daily
+      interval: weekly
+    groups:
+      gomod-patches:
+        patterns:
+          - "*"
+        update-types:
+          - patch
