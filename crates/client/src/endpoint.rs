@@ -12,7 +12,7 @@ use tokio_vsock::{VsockAddr, VsockStream};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, ServerTlsConfig};
 use tonic::transport::{Endpoint, Uri};
 use tower::service_fn;
-use tracing::info;
+use tracing::debug;
 
 use givc_common::address::EndpointAddress;
 use givc_common::types::TransportConfig;
@@ -45,7 +45,7 @@ impl TlsConfig {
         let client_key = std::fs::read(&self.key_file_path)?;
         let client_identity = Identity::from_pem(client_cert, client_key);
         let tls_name = self.tls_name.as_deref().context("Missing TLS name")?;
-        info!("Using TLS name: {tls_name}");
+        debug!("Using TLS name: {tls_name}");
         Ok(ClientTlsConfig::new()
             .ca_certificate(ca)
             .domain_name(tls_name)
@@ -99,7 +99,7 @@ impl EndpointConfig {
     /// Fails if connection failed
     pub async fn connect(&self) -> anyhow::Result<Channel> {
         let url = transport_config_to_url(&self.transport.address, self.tls.is_some());
-        info!("Connecting to {url}, TLS name {:?}", &self.tls);
+        debug!("Connecting to {url}, TLS name {:?}", &self.tls);
         let mut endpoint = Endpoint::try_from(url.clone())?
             .connect_timeout(Duration::from_millis(300))
             .concurrency_limit(30);
