@@ -111,9 +111,22 @@ impl EndpointConfig {
                 .connect()
                 .await
                 .with_context(|| format!("Connecting TCP {url} with {:?}", self.tls))?,
-            EndpointAddress::Unix(unix) => connect_unix_socket(endpoint, unix).await?,
-            EndpointAddress::Abstract(abs) => connect_unix_socket(endpoint, abs).await?,
-            EndpointAddress::Vsock(vs) => connect_vsock_socket(endpoint, *vs).await?,
+            EndpointAddress::Unix(unix) => connect_unix_socket(endpoint, unix)
+                .await
+                .with_context(|| format!("Connecting unix socket {unix} with {:?}", self.tls))?,
+            EndpointAddress::Abstract(abs) => connect_unix_socket(endpoint, abs)
+                .await
+                .with_context(|| format!("Connecting abstract socket {abs} with {:?}", self.tls))?,
+            EndpointAddress::Vsock(vs) => {
+                connect_vsock_socket(endpoint, *vs).await.with_context(|| {
+                    format!(
+                        "Connecting vsock {}:{} with {:?}",
+                        vs.cid(),
+                        vs.port(),
+                        self.tls
+                    )
+                })?
+            }
         };
         Ok(channel)
     }
