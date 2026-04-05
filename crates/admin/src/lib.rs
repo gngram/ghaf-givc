@@ -22,7 +22,7 @@ pub use givc_common::types;
 pub fn trace_init() -> anyhow::Result<()> {
     use std::env;
     use tracing::Level;
-    use tracing_subscriber::{EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt};
+    use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
 
     let env_filter =
         EnvFilter::try_from_env("GIVC_LOG").unwrap_or_else(|_| EnvFilter::from("info"));
@@ -43,17 +43,19 @@ pub fn trace_init() -> anyhow::Result<()> {
         output.boxed()
     };
 
-    // enable journald logging only on release to avoid log spam on dev machines
-    let journald = match env::var("INVOCATION_ID") {
-        Err(_) => None,
-        Ok(_) => tracing_journald::layer().ok(),
-    };
+    if env::var("INVOCATION_ID").is_ok() {
+        // systemd already captures stderr into journald, so keep a single sink here
+        let journald = tracing_journald::layer()
+            .map(|layer| layer.with_filter(env_filter.clone()).boxed())
+            .unwrap_or(output.with_filter(env_filter).boxed());
 
-    let subscriber = tracing_subscriber::registry()
-        .with(journald.with_filter(LevelFilter::INFO))
-        .with(output.with_filter(env_filter));
-
-    tracing::subscriber::set_global_default(subscriber)
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(journald))
+            .context("tracing shouldn't already have been set up")?;
+    } else {
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(output.with_filter(env_filter)),
+        )
         .context("tracing shouldn't already have been set up")?;
+    }
     Ok(())
 }
