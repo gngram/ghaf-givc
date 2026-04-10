@@ -216,6 +216,11 @@ in
       > **Caution**
       > Enabling debug logging may expose sensitive information in the logs, especially if the appvm uses the DBUS submodule.
     '';
+    cedarPolicyFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = "Cedar access control file.";
+    };
 
     uid = mkOption {
       type = types.int;
@@ -318,7 +323,8 @@ in
         Type = "exec";
         ExecStart =
           "${givc-agent}/bin/givc-agent -config /etc/givc-agent/config.json"
-          + optionalString cfg.debug " -debug";
+          + optionalString cfg.debug " -debug"
+          + optionalString (cfg.cedarPolicyFile != null) " -cedar ${cfg.cedarPolicyFile}";
         Restart = "on-failure";
         TimeoutStopSec = 5;
         RestartSec = 1;

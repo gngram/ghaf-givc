@@ -182,6 +182,12 @@ in
 
     };
 
+    cedarPolicyFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = "Cedar access control file.";
+    };
+
     debug = mkEnableOption ''
       enable appvm GIVC agent debug logging. This increases the verbosity of the logs.
 
@@ -230,7 +236,8 @@ in
         Type = "exec";
         ExecStart =
           "${givc-agent}/bin/givc-agent -config /etc/givc-agent/config.json"
-          + optionalString cfg.debug " -debug";
+          + optionalString cfg.debug " -debug"
+          + optionalString (cfg.cedarPolicyFile != null) " -cedar ${cfg.cedarPolicyFile}";
         Restart = "on-failure";
         TimeoutStopSec = 5;
         RestartSec = 1;
