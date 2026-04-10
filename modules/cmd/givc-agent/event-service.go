@@ -19,7 +19,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func StartEventService(ctx context.Context, wg *sync.WaitGroup, config *givc_config.AgentConfig) {
+func StartEventService(ctx context.Context, wg *sync.WaitGroup, config *givc_config.AgentConfig, aclFile *string) {
 
 	for _, eventConfig := range config.Capabilities.EventProxy.Events {
 
@@ -57,7 +57,7 @@ func StartEventService(ctx context.Context, wg *sync.WaitGroup, config *givc_con
 
 				var grpcProxyService []givc_types.GrpcServiceRegistration
 				grpcProxyService = append(grpcProxyService, eventProxyServer)
-				grpcServer, err := givc_grpc.NewServer(cfgEventServer, grpcProxyService)
+				grpcServer, err := givc_grpc.NewServer(cfgEventServer, grpcProxyService, aclFile)
 				if err != nil {
 					log.Errorf("event: cannot create grpc proxy server config: %v", err)
 					return

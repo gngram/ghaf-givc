@@ -18,7 +18,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func StartSocketService(ctx context.Context, wg *sync.WaitGroup, agentConfig *givc_config.AgentConfig) {
+func StartSocketService(ctx context.Context, wg *sync.WaitGroup, agentConfig *givc_config.AgentConfig, aclFile *string) {
 
 	for _, proxyConfig := range agentConfig.Capabilities.SocketProxy.Sockets {
 		// Create socket proxy server
@@ -86,7 +86,7 @@ func StartSocketService(ctx context.Context, wg *sync.WaitGroup, agentConfig *gi
 
 				var grpcProxyService []givc_types.GrpcServiceRegistration
 				grpcProxyService = append(grpcProxyService, socketProxyServer)
-				grpcServer, err := givc_grpc.NewServer(cfgProxyServer, grpcProxyService)
+				grpcServer, err := givc_grpc.NewServer(cfgProxyServer, grpcProxyService, aclFile)
 				if err != nil {
 					log.Errorf("Cannot create grpc proxy server config: %v", err)
 					return

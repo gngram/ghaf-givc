@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	accesscontrol "givc/modules/pkgs/access-control"
 	"givc/modules/pkgs/types"
 	givc_util "givc/modules/pkgs/utility"
 	"net"
@@ -43,7 +44,7 @@ type GrpcServer struct {
 }
 
 // NewServer creates a new gRPC server based on the provided endpoint configuration and service registrations.
-func NewServer(cfg *types.EndpointConfig, services []types.GrpcServiceRegistration) (*GrpcServer, error) {
+func NewServer(cfg *types.EndpointConfig, services []types.GrpcServiceRegistration, aclFile *string) (*GrpcServer, error) {
 
 	// GRPC Server
 	srv := GrpcServer{
@@ -63,24 +64,41 @@ func NewServer(cfg *types.EndpointConfig, services []types.GrpcServiceRegistrati
 		// return nil, grpc_status.Error(grpc_codes.Unavailable, "TLS configuration not provided")
 	}
 
-	// Interceptor chain
-	interceptors := []grpc.UnaryServerInterceptor{
+	// Interceptor chains
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		grpc_ctxtags.UnaryServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.TagBasedRequestFieldExtractor("log"))),
 		unaryLogRequestInterceptor,
 		grpc_logrus.UnaryServerInterceptor(log.NewEntry(log.StandardLogger())),
 	}
-	if srv.config.TlsConfig != nil {
-		interceptors = append(interceptors, givc_util.CertIPVerifyInterceptor)
+
+	// Add a separate list for stream interceptors
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		grpc_ctxtags.StreamServerInterceptor(grpc_ctxtags.WithFieldExtractor(grpc_ctxtags.TagBasedRequestFieldExtractor("log"))),
+		grpc_logrus.StreamServerInterceptor(log.NewEntry(log.StandardLogger())),
 	}
 
-	// GRPC Server
+	if srv.config.TlsConfig != nil {
+		unaryInterceptors = append(unaryInterceptors, givc_util.CertIPVerifyInterceptor)
+		// If you have a stream version of CertIPVerifyInterceptor, add it here
+	}
+
+	if *aclFile != "" {
+		// We update NewAcessController to return both types
+		uI, sI, err := accesscontrol.NewAcessController(*aclFile)
+		if err == nil {
+			unaryInterceptors = append(unaryInterceptors, uI)
+			streamInterceptors = append(streamInterceptors, sI)
+			log.Info("Cedar access control interceptors loaded")
+		} else {
+			return nil, err
+		}
+	}
+
 	srv.grpcServer = grpc.NewServer(
-		grpc.UnaryInterceptor(
-			grpc_middleware.ChainUnaryServer(interceptors...),
-		),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(unaryInterceptors...)),
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(streamInterceptors...)),
 		grpcTlsConfig,
 	)
-
 	// Register gRPC services
 	for _, s := range srv.config.Services {
 		log.Info("Registering service: ", s.Name())
