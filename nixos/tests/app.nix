@@ -216,7 +216,50 @@ in
                       }
                     ];
                   };
+                  cedarPolicyFile = "/etc/app_acl.cedar";
                 };
+                environment.etc."app_acl.cedar".text = ''
+                  // 1. Allow Locale and Timezone management from the controller
+                  permit (
+                      principal == source::"adminvm",
+                      action in [action::"LocaleSet", action::"TimezoneSet"],
+                      resource == module::"locale.LocaleClient"
+                  );
+
+                  // 2. Allow checking status of the agent service itself
+                  permit (
+                      principal == source::"adminvm",
+                      action == action::"GetUnitStatus",
+                      resource == module::"systemd.UnitControlService"
+                  )
+                  when {
+                      context.UnitName == "givc-appvm.service"
+                  };
+
+                  // 3. Allow starting application instances (cat@0, cat@1, etc.)
+                  permit (
+                      principal == source::"adminvm",
+                      action == action::"StartApplication",
+                      resource == module::"systemd.UnitControlService"
+                  )
+                  when {
+                      // Uses 'like' for pattern matching to cover cat@0, cat@1, etc.
+                      context.UnitName like "cat@*.service"
+                  };
+
+                  // 4. Deny cat on /tmp/app_forbids
+                  forbid (
+                      principal,
+                      action == action::"StartApplication",
+                      resource == module::"systemd.UnitControlService"
+                  )
+                  when {
+                      context.UnitName like "cat@*.service" &&
+                      context has Args &&
+                      context.Args.contains("/tmp/app_forbids")
+                  };
+                '';
+
               };
           };
           testScript =
@@ -240,6 +283,7 @@ in
                   guivm.wait_for_unit("givc-guivm.service")
                   appvm.wait_for_unit("multi-user.target")
                   appvm.succeed("sudo -u ghaf touch /tmp/testfile")
+                  appvm.succeed("sudo -u ghaf touch /tmp/agent_forbids")
 
               with subtest("start app with correct file path"):
                   guivm.succeed("${cli} ${cliArgs} start app --vm appvm cat -- /tmp/testfile")
@@ -248,6 +292,15 @@ in
               with subtest("fail app start with wrong file path"):
                   guivm.fail("${cli} ${cliArgs} start --vm appvm cat -- /var/log/lastlog")
                   guivm.fail("${cli} ${cliArgs} start --vm appvm cat -- /etc/../bin/sh")
+
+              with subtest("agent access control test (cedar)"):
+                  (exit_code, output) = guivm.execute(
+                      "${cli} ${cliArgs} start app --vm appvm cat -- /tmp/app_forbids 2>&1"
+                  )
+                  assert exit_code != 0, f"permission denied by access control policy: {output}"
+                  assert "permission denied by access control policy" in output, f"Expected 'permission denied by access control policy', got: {output}"
+                  print("\033[94m" + "\n-- agent access control test (cedar) completed successfully --\n" + "\033[0m")
+
             '';
         };
       };
