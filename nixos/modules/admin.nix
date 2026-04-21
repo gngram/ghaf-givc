@@ -112,6 +112,11 @@ in
         List of addresses for the admin service to listen on. Requires a list of type `transportSubmodule`.
       '';
     };
+    cedarPolicyFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = "Path to the ACL file for the admin service";
+    };
 
     services = mkOption {
       type = types.listOf types.str;
@@ -307,6 +312,7 @@ in
           "POLICY_ADMIN" = "${trivial.boolToString cfg.policyAdmin.enable}";
           "POLICY_CONFIG" = "${toJSON jsonPolicies}";
           "POLICY_STORE" = "${cfg.policyAdmin.storePath}";
+          "CEDAR_FILE" = lib.optionalString (cfg.cedarPolicyFile != null) "${cfg.cedarPolicyFile}";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";
