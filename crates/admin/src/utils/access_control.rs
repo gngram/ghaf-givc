@@ -84,7 +84,7 @@ impl AccessControl {
             policy_state,
             enabled,
             type_source: EntityTypeName::from_str("Source").expect("valid type name"),
-            type_action: EntityTypeName::from_str("Action").expect("valid type name"),
+            type_action: EntityTypeName::from_str("Command").expect("valid type name"),
             type_module: EntityTypeName::from_str("Module").expect("valid type name"),
         })
     }

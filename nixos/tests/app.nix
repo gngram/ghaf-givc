@@ -29,7 +29,7 @@ let
 in
 {
   perSystem =
-    { self', ... }:
+    { self', pkgs, ... }:
     {
       vmTests.tests.app = {
         module = {
@@ -58,36 +58,88 @@ in
                 inherit (adminConfig) name;
                 inherit (adminConfig) addresses;
                 tls.enable = tls;
-                cedarPolicyFile = "/etc/admin_acl.cedar";
               };
+              givc.accessControl =
+                let
+                  cedarRules = pkgs.writeText "cedar_rules.cedar" ''
+                    permit (
+                      principal,
+                      action,
+                      resource
+                    )
+                    when {
+                        principal in [
+                          Source::"guivm",
+                          Source::"appvm"
+                        ] &&
+                        action == Command::"RegisterService" &&
+                        resource == Module::"admin.AdminService"
+                    };
+                    permit (
+                        principal,
+                        action,
+                        resource
+                    )
+                    when {
+                        principal == Source::"guivm" && 
+                        action == Command::"StartApplication" &&
+                        resource == Module::"admin.AdminService" &&
+                        context.VmName == "appvm" &&
+                        ["cat", "foot", "clearexit"].contains(context.AppName)
+                    };
+
+                    forbid (
+                        principal,
+                        action,
+                        resource
+                    )
+                    when {
+                        action == Command::"StartApplication" &&
+                        resource == Module::"admin.AdminService" &&
+                        context.AppName == "cat" &&
+                        context.Args.contains("/tmp/admin_forbids")
+                    };
+                  '';
+                in
+                {
+                  enable = true;
+                  cedarRulesFile = cedarRules;
+                };
               environment.etc."admin_acl.cedar".text = ''
                 permit (
                     principal,
-                    action == Action::"RegisterService",
-                    resource == Module::"admin.AdminService"
+                    action,
+                    resource
                 )
                 when {
                     principal in [
-                    Source::"guivm",
-                    Source::"appvm"
-                    ] 
+                      Source::"guivm",
+                      Source::"appvm"
+                    ] &&
+                    action == Command::"RegisterService" &&
+                    resource == Module::"admin.AdminService"
                 };
                 permit (
-                    principal == Source::"guivm",
-                    action == Action::"StartApplication",
-                    resource == Module::"admin.AdminService"
+                    principal,
+                    action,
+                    resource
                 )
                 when {
+                    principal == Source::"guivm" && 
+                    action == Command::"StartApplication" &&
+                    resource == Module::"admin.AdminService" &&
                     context.VmName == "appvm" &&
                     ["cat", "foot", "clearexit"].contains(context.AppName)
                 };
 
                 forbid (
                     principal,
-                    action == Action::"StartApplication",
-                    resource == Module::"admin.AdminService"
+                    action,
+                    resource
                 )
                 when {
+                    action == Command::"StartApplication" &&
+                    resource == Module::"admin.AdminService" &&
                     context.AppName == "cat" &&
                     context.Args.contains("/tmp/admin_forbids")
                 };
@@ -219,79 +271,73 @@ in
                   }
                 ];
                 services.openssh.enable = true;
-                givc.appvm = {
-                  enable = true;
-                  debug = true;
-                  network = {
-                    agent.transport = {
-                      name = "appvm";
-                      addr = addrs.appvm;
+                givc = {
+                  appvm = {
+                    enable = true;
+                    debug = true;
+                    network = {
+                      agent.transport = {
+                        name = "appvm";
+                        addr = addrs.appvm;
+                      };
+                      admin.transport = lib.head adminConfig.addresses;
+                      tls = {
+                        enable = tls;
+                        caCertPath = lib.mkForce "/etc/givc/ca-cert.pem";
+                        certPath = lib.mkForce "/etc/givc/cert.pem";
+                        keyPath = lib.mkForce "/etc/givc/key.pem";
+                      };
                     };
-                    admin.transport = lib.head adminConfig.addresses;
-                    tls = {
-                      enable = tls;
-                      caCertPath = lib.mkForce "/etc/givc/ca-cert.pem";
-                      certPath = lib.mkForce "/etc/givc/cert.pem";
-                      keyPath = lib.mkForce "/etc/givc/key.pem";
+                    capabilities = {
+                      applications = [
+                        {
+                          name = "cat";
+                          command = "/run/current-system/sw/bin/cat";
+                          args = [ "file" ];
+                          directories = [
+                            "/etc"
+                            "/tmp"
+                          ];
+                        }
+
+                        {
+                          name = "another-cat";
+                          command = "/run/current-system/sw/bin/cat";
+                          args = [ "file" ];
+                          directories = [
+                            "/etc"
+                            "/tmp"
+                          ];
+                        }
+                      ];
                     };
                   };
-                  capabilities = {
-                    applications = [
-                      {
-                        name = "cat";
-                        command = "/run/current-system/sw/bin/cat";
-                        args = [ "file" ];
-                        directories = [
-                          "/etc"
-                          "/tmp"
-                        ];
-                      }
-                    ];
+                  accessControl = {
+                    enable = true;
+                    extraRules = {
+                      forbid = [
+                        {
+                          modules = [ "systemd.UnitControlService" ];
+                          actions = [ "StartApplication" ];
+                          context = [
+                            {
+                              argName = "UnitName";
+                              condition = "like";
+                              targets = [ "cat@*.service" ];
+                            }
+                            {
+                              argName = "Args";
+                              condition = "contains";
+                              targets = [ "/tmp/app_forbids" ];
+                              optional = true;
+                              joinOp = "&&";
+                            }
+                          ];
+                        }
+                      ];
+                    };
                   };
-                  cedarPolicyFile = "/etc/app_acl.cedar";
                 };
-                environment.etc."app_acl.cedar".text = ''
-                  // 1. Allow Locale and Timezone management from the controller
-                  permit (
-                      principal == source::"adminvm",
-                      action in [action::"LocaleSet", action::"TimezoneSet"],
-                      resource == module::"locale.LocaleClient"
-                  );
-
-                  // 2. Allow checking status of the agent service itself
-                  permit (
-                      principal == source::"adminvm",
-                      action == action::"GetUnitStatus",
-                      resource == module::"systemd.UnitControlService"
-                  )
-                  when {
-                      context.UnitName == "givc-appvm.service"
-                  };
-
-                  // 3. Allow starting application instances (cat@0, cat@1, etc.)
-                  permit (
-                      principal == source::"adminvm",
-                      action == action::"StartApplication",
-                      resource == module::"systemd.UnitControlService"
-                  )
-                  when {
-                      // Uses 'like' for pattern matching to cover cat@0, cat@1, etc.
-                      context.UnitName like "cat@*.service"
-                  };
-
-                  // 4. Deny cat on /tmp/app_forbids
-                  forbid (
-                      principal,
-                      action == action::"StartApplication",
-                      resource == module::"systemd.UnitControlService"
-                  )
-                  when {
-                      context.UnitName like "cat@*.service" &&
-                      context has Args &&
-                      context.Args.contains("/tmp/app_forbids")
-                  };
-                '';
-
               };
           };
           testScript =
