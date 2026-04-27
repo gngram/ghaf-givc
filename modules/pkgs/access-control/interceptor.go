@@ -123,13 +123,13 @@ func NewAcessController(policyPath string) (grpc.UnaryServerInterceptor, grpc.St
 		if len(parts) != 2 {
 		}
 		request := cedar.Request{
-			Principal: cedartypes.NewEntityUID("source", cedartypes.String(source)),
-			Resource:  cedartypes.NewEntityUID("module", cedartypes.String(parts[0])),
-			Action:    cedartypes.NewEntityUID("action", cedartypes.String(parts[1])),
+			Principal: cedartypes.NewEntityUID("Source", cedartypes.String(source)),
+			Resource:  cedartypes.NewEntityUID("Module", cedartypes.String(parts[0])),
+			Action:    cedartypes.NewEntityUID("Command", cedartypes.String(parts[1])),
 			Context:   cedarCtx,
 		}
 
-		ok, diag := policies.IsAuthorized(cedar.EntityMap{}, request)
+		ok, diag := cedar.Authorize(policies, cedar.EntityMap{}, request)
 		if ok != cedartypes.Allow {
 			log.WithFields(log.Fields{
 				"principal": source,

@@ -47,6 +47,10 @@ let
   };
 in
 {
+  imports = [
+    ./access-control.nix
+    ./givc-agent-acl.nix
+  ];
   options.givc.appvm = {
     enable = mkEnableOption "GIVC appvm agent module";
 
@@ -216,11 +220,6 @@ in
       > **Caution**
       > Enabling debug logging may expose sensitive information in the logs, especially if the appvm uses the DBUS submodule.
     '';
-    cedarPolicyFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Cedar access control file.";
-    };
 
     uid = mkOption {
       type = types.int;
@@ -234,7 +233,6 @@ in
         to keep the user session alive in the application VM without specific login.
       '';
     };
-
   };
 
   config = mkIf cfg.enable {
@@ -275,6 +273,11 @@ in
         message = "EventProxy: Each event proxy instance requires a unique port number.";
       }
     ];
+
+    givc.accessControl = {
+      trustedApps = cfg.capabilities.applications;
+      adminVm = cfg.network.admin.transport.name;
+    };
 
     security.polkit = {
       enable = true;
@@ -324,7 +327,7 @@ in
         ExecStart =
           "${givc-agent}/bin/givc-agent -config /etc/givc-agent/config.json"
           + optionalString cfg.debug " -debug"
-          + optionalString (cfg.cedarPolicyFile != null) " -cedar ${cfg.cedarPolicyFile}";
+          + optionalString config.givc.accessControl.enable " -cedar /etc/givc-access-control.cedar";
         Restart = "on-failure";
         TimeoutStopSec = 5;
         RestartSec = 1;

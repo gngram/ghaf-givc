@@ -36,6 +36,10 @@ let
   };
 in
 {
+  imports = [
+    ./access-control.nix
+    ./givc-agent-acl.nix
+  ];
   options.givc.host = {
     enable = mkEnableOption "givc host agent module, which is responsible for managing system VMs and app VMs.";
 
@@ -182,12 +186,6 @@ in
 
     };
 
-    cedarPolicyFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Cedar access control file.";
-    };
-
     debug = mkEnableOption ''
       enable appvm GIVC agent debug logging. This increases the verbosity of the logs.
 
@@ -237,7 +235,7 @@ in
         ExecStart =
           "${givc-agent}/bin/givc-agent -config /etc/givc-agent/config.json"
           + optionalString cfg.debug " -debug"
-          + optionalString (cfg.cedarPolicyFile != null) " -cedar ${cfg.cedarPolicyFile}";
+          + optionalString config.givc.accessControl.enable " -cedar /etc/givc-access-control.cedar";
         Restart = "on-failure";
         TimeoutStopSec = 5;
         RestartSec = 1;

@@ -59,6 +59,9 @@ let
       { };
 in
 {
+  imports = [
+    ./access-control.nix
+  ];
   options.givc.admin = {
     enable = mkOption {
       type = types.bool;
@@ -111,11 +114,6 @@ in
       description = ''
         List of addresses for the admin service to listen on. Requires a list of type `transportSubmodule`.
       '';
-    };
-    cedarPolicyFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Path to the ACL file for the admin service";
     };
 
     services = mkOption {
@@ -312,7 +310,7 @@ in
           "POLICY_ADMIN" = "${trivial.boolToString cfg.policyAdmin.enable}";
           "POLICY_CONFIG" = "${toJSON jsonPolicies}";
           "POLICY_STORE" = "${cfg.policyAdmin.storePath}";
-          "CEDAR_FILE" = lib.optionalString (cfg.cedarPolicyFile != null) "${cfg.cedarPolicyFile}";
+          "CEDAR_FILE" = lib.optionalString config.givc.accessControl.enable "/etc/givc-access-control.cedar";
         }
         // attrsets.optionalAttrs cfg.tls.enable {
           "CA_CERT" = "${cfg.tls.caCertPath}";

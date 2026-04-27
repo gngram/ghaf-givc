@@ -46,10 +46,13 @@ let
       };
     };
   };
+
 in
 {
   imports = [
     ./notifier.nix
+    ./access-control.nix
+    ./givc-agent-acl.nix
   ];
 
   options.givc.sysvm = {
@@ -128,6 +131,7 @@ in
         '';
       };
     };
+
     capabilities = {
       services = mkOption {
         type = types.listOf types.str;
@@ -234,12 +238,6 @@ in
       };
     };
 
-    cedarPolicyFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Cedar access control file.";
-    };
-
     debug = mkEnableOption ''
       enable appvm GIVC agent debug logging. This increases the verbosity of the logs.
 
@@ -288,6 +286,11 @@ in
       }
     ];
 
+    givc.accessControl = {
+      administeredServices = cfg.capabilities.services;
+      adminVm = cfg.network.admin.transport.name;
+    };
+
     systemd.targets.givc-setup = {
       enable = true;
       description = "Ghaf givc target";
@@ -322,7 +325,7 @@ in
         ExecStart =
           "${givc-agent}/bin/givc-agent -config /etc/givc-agent/config.json"
           + optionalString cfg.debug " -debug"
-          + optionalString (cfg.cedarPolicyFile != null) " -cedar ${cfg.cedarPolicyFile}";
+          + optionalString config.givc.accessControl.enable " -cedar /etc/givc-access-control.cedar";
         Restart = "on-failure";
         TimeoutStopSec = 5;
         RestartSec = 1;
