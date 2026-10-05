@@ -3,13 +3,15 @@
 package exec
 
 import (
-	"bufio"
+	"bytes"
+	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"sync"
-	"syscall"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 	pb "givc/modules/api/exec"
@@ -18,21 +20,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type process struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	stderr io.ReadCloser
-}
-
 type ExecServer struct {
 	pb.UnimplementedExecServer
-	processes sync.Map
-}
-
-var allowedCommands = map[string]bool{
-	"ota-update": true,
-	"uptime":     true, // For testing
 }
 
 func (s *ExecServer) Name() string {
@@ -44,220 +33,108 @@ func (s *ExecServer) RegisterGrpcService(srv *grpc.Server) {
 }
 
 func NewExecServer() (*ExecServer, error) {
-	execServer := ExecServer{}
-
-	return &execServer, nil
+	return &ExecServer{}, nil
 }
 
-func (s *ExecServer) RunCommand(stream pb.Exec_RunCommandServer) error {
-	var proc *process
-	var wg sync.WaitGroup
+// GetUptime retrieves system uptime natively without shelling out to external binaries.
+func (s *ExecServer) GetUptime(ctx context.Context, req *pb.UptimeRequest) (*pb.UptimeResponse, error) {
+	if ctx == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "context cannot be nil")
+	}
 
-	// Read first request (StartCommand expected)
-	req, err := stream.Recv()
+	data, err := os.ReadFile("/proc/uptime")
 	if err != nil {
-		return fmt.Errorf("failed to receive start command: %w", err)
+		return nil, status.Errorf(codes.Internal, "failed to read /proc/uptime: %v", err)
 	}
 
-	start, ok := req.Command.(*pb.CommandRequest_Start)
-	if !ok {
-		return fmt.Errorf("expected StartCommand, got something else")
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		return nil, status.Errorf(codes.Internal, "malformed /proc/uptime data")
 	}
 
-	proc, err = s.startCommand(start.Start, &wg, stream)
+	uptimeSec, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
-		return err
+		return nil, status.Errorf(codes.Internal, "failed to parse uptime: %v", err)
 	}
 
-	go handleInput(stream, proc)
-
-	// Wait for the process to finish
-	err = proc.cmd.Wait()
-	wg.Wait()
-
-	exitCode := 0
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		exitCode = exitErr.ExitCode()
+	idleSec, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to parse idle time: %v", err)
 	}
-	log.Infof("Streaming Finished event: rc=%d\n", exitCode)
-	stream.Send(&pb.CommandResponse{
-		Event: &pb.CommandResponse_Finished{
-			Finished: &pb.FinishedEvent{ReturnCode: int32(exitCode)},
-		},
-	})
-	return nil
 
+	d := time.Duration(uptimeSec) * time.Second
+	formatted := fmt.Sprintf("up %s", d.String())
+
+	return &pb.UptimeResponse{
+		UptimeSeconds: uptimeSec,
+		IdleSeconds:   idleSec,
+		Formatted:     formatted,
+	}, nil
 }
 
-func handleInput(stream pb.Exec_RunCommandServer, proc *process) {
-	ctx := stream.Context()
+var validCachixIdentRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
-	for {
-		select {
-		case <-ctx.Done():
-			// RPC context canceled (client disconnected or deadline exceeded)
-			return
-		default:
-			req, err := stream.Recv()
-			if err == io.EOF {
-				// Client closed the input stream (stdin closed)
-				return
+// RunOtaUpdate executes a dedicated, validated OTA update operation.
+func (s *ExecServer) RunOtaUpdate(ctx context.Context, req *pb.OtaUpdateRequest) (*pb.OtaUpdateResponse, error) {
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "request cannot be nil")
+	}
+
+	var args []string
+
+	switch req.Action {
+	case pb.OtaAction_OTA_ACTION_GET:
+		args = []string{"get"}
+	case pb.OtaAction_OTA_ACTION_CACHIX:
+		pin := req.GetPin()
+		cache := req.GetCache()
+		if pin == "" || cache == "" {
+			return nil, status.Errorf(codes.InvalidArgument, "pin and cache must be non-empty for cachix action")
+		}
+		if !validCachixIdentRegex.MatchString(pin) || !validCachixIdentRegex.MatchString(cache) {
+			return nil, status.Errorf(codes.InvalidArgument, "pin or cache identifier contains invalid characters")
+		}
+		args = []string{"cachix", pin, "--cache", cache}
+		if req.Token != nil {
+			if strings.ContainsRune(*req.Token, 0) {
+				return nil, status.Errorf(codes.InvalidArgument, "token contains null byte")
 			}
-			if err != nil {
-				log.Warnf("handleInput: recv error: %v", err)
-				return
+			args = append(args, "--token", *req.Token)
+		}
+		if req.CachixHost != nil {
+			if strings.ContainsRune(*req.CachixHost, 0) {
+				return nil, status.Errorf(codes.InvalidArgument, "cachix host contains null byte")
 			}
-
-			switch v := req.Command.(type) {
-			case *pb.CommandRequest_Start:
-				log.Warnf("handleInput: unexpected Start after process already started")
-				return
-			case *pb.CommandRequest_Stdin:
-				if proc == nil {
-					log.Warnf("handleInput: stdin received but process not started")
-					return
-				}
-				if _, err := proc.stdin.Write(v.Stdin.Payload); err != nil {
-					log.Warnf("handleInput: write to stdin failed: %v", err)
-					return
-				}
-			case *pb.CommandRequest_Signal:
-				if proc == nil {
-					log.Warnf("handleInput: signal received but process not started")
-					return
-				}
-				if err := proc.cmd.Process.Signal(syscall.Signal(v.Signal.Signal)); err != nil {
-					log.Warnf("handleInput: sending signal failed: %v", err)
-					return
-				}
-			default:
-				log.Warnf("handleInput: unknown command request")
-			}
+			args = append(args, "--cachix-host", *req.CachixHost)
 		}
-	}
-}
-
-func (s *ExecServer) startCommand(req *pb.StartCommand, wg *sync.WaitGroup, stream pb.Exec_RunCommandServer) (*process, error) {
-	cmd := exec.Command(req.Command, req.Arguments...)
-	if req.WorkingDirectory != nil {
-		cmd.Dir = *req.WorkingDirectory
-	}
-	cmd.Env = append(cmd.Env, flattenEnv(req.EnvVars)...)
-
-	var stdin io.WriteCloser
-	var stdout, stderr io.ReadCloser
-	var err error
-
-	// Handle stdin: if not provided, bind to /dev/null
-	if req.Stdin != nil {
-		stdin, err = cmd.StdinPipe()
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		devNull, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
-		if err != nil {
-			return nil, err
-		}
-		cmd.Stdin = devNull
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported or unspecified OTA action: %v", req.Action)
 	}
 
-	// Set up stdout and stderr
-	stdout, err = cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr, err = cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
+	log.WithFields(log.Fields{
+		"action": req.Action.String(),
+		"args":   args,
+	}).Info("[Exec] Executing dedicated OTA update operation")
 
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
+	cmd := exec.CommandContext(ctx, "ota-update", args...)
+	cmd.Env = []string{"PATH=/run/current-system/sw/bin:/bin:/usr/bin"}
 
-	wg.Add(2)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-	// Send the StartedEvent response
-	if err := stream.Send(&pb.CommandResponse{
-		Event: &pb.CommandResponse_Started{
-			Started: &pb.StartedEvent{Pid: int32(cmd.Process.Pid)},
-		},
-	}); err != nil {
-		return nil, err
-	}
-
-	// Stream stdout
-	go streamOutput(stdout, stream, wg, func(data []byte) *pb.CommandResponse {
-		log.Infof("Streaming stdout: %d bytes\n", len(data))
-		return &pb.CommandResponse{
-			Event: &pb.CommandResponse_Stdout{
-				Stdout: &pb.CommandIO{Payload: data},
-			},
-		}
-	})
-
-	// Stream stderr
-	go streamOutput(stderr, stream, wg, func(data []byte) *pb.CommandResponse {
-		log.Infof("Streaming stderr: %d bytes\n", len(data))
-		return &pb.CommandResponse{
-			Event: &pb.CommandResponse_Stderr{
-				Stderr: &pb.CommandIO{Payload: data},
-			},
-		}
-	})
-
-	// Write the initial stdin payload if provided
-	if req.Stdin != nil && stdin != nil {
-		_, err = stdin.Write(req.Stdin)
-		if err != nil {
-			return nil, fmt.Errorf("failed to write initial stdin: %v", err)
+	rc := int32(0)
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			rc = int32(exitErr.ExitCode())
+		} else {
+			return nil, status.Errorf(codes.Internal, "failed to execute ota-update: %v", err)
 		}
 	}
 
-	proc := &process{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: stdout,
-		stderr: stderr,
-	}
-	return proc, nil
-}
-
-func streamOutput(reader io.ReadCloser, stream pb.Exec_RunCommandServer, wg *sync.WaitGroup, makeResponse func(data []byte) *pb.CommandResponse) {
-	defer reader.Close()
-	defer wg.Done()
-	// Create a buffered reader
-	bufReader := bufio.NewReader(reader)
-	buffer := make([]byte, 1024)
-	for {
-		n, err := bufReader.Read(buffer)
-		if err == io.EOF {
-			log.Errorf("EOF during reading input: %v", err)
-			break
-		}
-		if err != nil {
-			log.Errorf("unknown error reading input: %v", err)
-			return
-		}
-		resp := makeResponse(buffer[:n])
-		if err := stream.Send(resp); err != nil {
-			log.Errorf("failed to stream: %v", err)
-		}
-	}
-}
-
-func (s *ExecServer) validateCommand(cmd string) error {
-	if _, ok := allowedCommands[cmd]; !ok {
-		return status.Errorf(codes.PermissionDenied, "access denied: command %q is not allowed", cmd)
-	}
-	return nil
-}
-
-func flattenEnv(env map[string]string) []string {
-	var result []string
-	for k, v := range env {
-		result = append(result, fmt.Sprintf("%s=%s", k, v))
-	}
-	return result
+	return &pb.OtaUpdateResponse{
+		ReturnCode: rc,
+		Output:     stdout.String(),
+		Error:      stderr.String(),
+	}, nil
 }

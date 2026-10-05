@@ -11,7 +11,7 @@ gen_protoc() {
 }
 
 if [ $# -eq 0 ]; then
-    set -- admin systemd socket stats hwid locale wifi event notify policyadmin update
+    set -- admin systemd socket stats hwid locale wifi event notify policyadmin update exec
 fi
 
 for protodir in "$@"; do

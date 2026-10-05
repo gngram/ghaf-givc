@@ -42,6 +42,8 @@ pub struct ShellExecutor;
 fn command(spec: &CommandSpec) -> Command {
     let mut command = Command::new(&spec.program);
     command.args(&spec.args);
+    command.env_clear();
+    command.env("PATH", "/run/current-system/sw/bin:/bin:/usr/bin");
     command
 }
 

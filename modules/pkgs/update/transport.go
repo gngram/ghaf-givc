@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -72,9 +73,9 @@ func NewUpdateServer() (*UpdateServer, error) {
 	return &updateServer, nil
 }
 
-func (s *UpdateServer) ListGenerations(_ context.Context, _ *pbupdate.Empty) (*pbupdate.ListGenerationsResponse, error) {
+func (s *UpdateServer) ListGenerations(ctx context.Context, _ *pbupdate.Empty) (*pbupdate.ListGenerationsResponse, error) {
 	log.Debug("update: list generations via ota-update get")
-	stdout, stderr, rc, err := runUpdateCommand("get")
+	stdout, stderr, rc, err := runUpdateCommand(ctx, "get")
 	if err != nil {
 		return nil, err
 	}
@@ -108,10 +109,16 @@ func (s *UpdateServer) ListGenerations(_ context.Context, _ *pbupdate.Empty) (*p
 	return resp, nil
 }
 
-func (s *UpdateServer) Discover(_ context.Context, request *pbupdate.RegistryDiscoverRequest) (*pbupdate.RegistryDiscoverResponse, error) {
+func (s *UpdateServer) Discover(ctx context.Context, request *pbupdate.RegistryDiscoverRequest) (*pbupdate.RegistryDiscoverResponse, error) {
+	if request == nil || request.Reference == "" {
+		return nil, grpc_status.Error(grpc_codes.InvalidArgument, "request and reference must not be empty")
+	}
+	if strings.ContainsRune(request.Reference, 0) {
+		return nil, grpc_status.Error(grpc_codes.InvalidArgument, "reference contains null byte")
+	}
 	args := append([]string{"registry", "--output", "jsonl"}, registryArgs(request)...)
 	args = append(args, "discover", request.Reference)
-	stdout, stderr, rc, err := runUpdateCommand(args...)
+	stdout, stderr, rc, err := runUpdateCommand(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -137,10 +144,16 @@ func (s *UpdateServer) Discover(_ context.Context, request *pbupdate.RegistryDis
 	return resp, nil
 }
 
-func (s *UpdateServer) Changelog(_ context.Context, request *pbupdate.RegistryChangelogRequest) (*pbupdate.RegistryChangelogResponse, error) {
+func (s *UpdateServer) Changelog(ctx context.Context, request *pbupdate.RegistryChangelogRequest) (*pbupdate.RegistryChangelogResponse, error) {
+	if request == nil || request.Reference == "" {
+		return nil, grpc_status.Error(grpc_codes.InvalidArgument, "request and reference must not be empty")
+	}
+	if strings.ContainsRune(request.Reference, 0) {
+		return nil, grpc_status.Error(grpc_codes.InvalidArgument, "reference contains null byte")
+	}
 	args := append([]string{"registry", "--output", "jsonl"}, registryArgs(request)...)
 	args = append(args, "changelog", request.Reference)
-	stdout, stderr, rc, err := runUpdateCommand(args...)
+	stdout, stderr, rc, err := runUpdateCommand(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +165,12 @@ func (s *UpdateServer) Changelog(_ context.Context, request *pbupdate.RegistryCh
 }
 
 func (s *UpdateServer) Pull(request *pbupdate.RegistryPullRequest, stream pbupdate.Update_PullServer) error {
+	if request == nil || request.Reference == "" || request.Destination == "" {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "request, reference, and destination must not be empty")
+	}
+	if strings.ContainsRune(request.Reference, 0) || strings.ContainsRune(request.Destination, 0) {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "request contains null byte")
+	}
 	args := append([]string{"registry", "--output", "jsonl"}, registryArgs(request)...)
 	args = append(args, "pull", request.Reference, "--destination", request.Destination)
 	args = append(args, "--validate")
@@ -160,6 +179,12 @@ func (s *UpdateServer) Pull(request *pbupdate.RegistryPullRequest, stream pbupda
 }
 
 func (s *UpdateServer) ImageInstall(request *pbupdate.ImageInstallRequest, stream pbupdate.Update_ImageInstallServer) error {
+	if request == nil || request.Manifest == "" {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "request and manifest must not be empty")
+	}
+	if strings.ContainsRune(request.Manifest, 0) {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "manifest contains null byte")
+	}
 	args := []string{"image", "install", "--manifest", request.Manifest}
 	args = append(args, "--validate")
 
@@ -181,12 +206,26 @@ func (s *UpdateServer) ImageInstall(request *pbupdate.ImageInstallRequest, strea
 	)
 }
 
+var validCachixIdentRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
 func (s *UpdateServer) InstallCachix(request *pbupdate.Cachix, stream pbupdate.Update_InstallCachixServer) error {
+	if request == nil || request.Pin == "" || request.Cache == "" {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "request, pin, and cache must not be empty")
+	}
+	if !validCachixIdentRegex.MatchString(request.Pin) || !validCachixIdentRegex.MatchString(request.Cache) {
+		return grpc_status.Error(grpc_codes.InvalidArgument, "pin or cache identifier contains invalid characters")
+	}
 	args := []string{"cachix", request.Pin, "--cache", request.Cache}
 	if request.Token != nil {
+		if strings.ContainsRune(*request.Token, 0) {
+			return grpc_status.Error(grpc_codes.InvalidArgument, "token contains null byte")
+		}
 		args = append(args, "--token", *request.Token)
 	}
 	if request.CachixHost != nil {
+		if strings.ContainsRune(*request.CachixHost, 0) {
+			return grpc_status.Error(grpc_codes.InvalidArgument, "cachix host contains null byte")
+		}
 		args = append(args, "--cachix-host", *request.CachixHost)
 	}
 
@@ -238,9 +277,10 @@ func registryCredentials(credentials *pbupdate.RegistryCredentials) []string {
 	}
 }
 
-func runUpdateCommand(args ...string) ([]byte, []byte, int, error) {
+func runUpdateCommand(ctx context.Context, args ...string) ([]byte, []byte, int, error) {
 	log.Debug("update: running ota-update")
-	cmd := exec.Command("ota-update", args...)
+	cmd := exec.CommandContext(ctx, "ota-update", args...)
+	cmd.Env = []string{"PATH=/run/current-system/sw/bin:/bin:/usr/bin"}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -268,7 +308,8 @@ func runUpdateCommand(args ...string) ([]byte, []byte, int, error) {
 }
 
 func runPullCommand(stream pbupdate.Update_PullServer, args ...string) error {
-	cmd := exec.Command("ota-update", args...)
+	cmd := exec.CommandContext(stream.Context(), "ota-update", args...)
+	cmd.Env = []string{"PATH=/run/current-system/sw/bin:/bin:/usr/bin"}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -306,7 +347,8 @@ func runPullCommand(stream pbupdate.Update_PullServer, args ...string) error {
 }
 
 func runOutputCommand[T any](stream grpc.ServerStreamingServer[T], args []string, makeStdout func([]byte, bool) T, makeStderr func([]byte, bool) T) error {
-	cmd := exec.Command("ota-update", args...)
+	cmd := exec.CommandContext(stream.Context(), "ota-update", args...)
+	cmd.Env = []string{"PATH=/run/current-system/sw/bin:/bin:/usr/bin"}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

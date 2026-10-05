@@ -539,7 +539,7 @@ impl AdminClient {
         let request = pb::update::SetGenerationRequest {
             update: Some(pb::update::set_generation_request::Update::Cachix(cachix)),
         };
-        let mut stream = self
+        let stream = self
             .connect_to()
             .await?
             .set_generation(request)

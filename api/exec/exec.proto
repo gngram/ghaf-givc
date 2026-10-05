@@ -1,59 +1,48 @@
+// SPDX-FileCopyrightText: 2024-2026 TII (SSRC) and the Ghaf contributors
+// SPDX-License-Identifier: Apache-2.0
+
 syntax = "proto3";
 option go_package = "givc/modules/api/exec";
 package exec;
 
-// Define the request to execute a subprocess command
-message StartCommand {
-  string Command = 1;             // The shell command to execute
-  repeated string Arguments = 2;  // Arguments for the command
-  optional string WorkingDirectory = 3;   // (Optional) Directory to execute the command in
-  map<string, string> EnvVars = 4; // (Optional) Environment variables
-  optional bytes Stdin = 5; // Initial stdin sequence, if omitted -- standard input would be bound to /dev/null
-                            // Additional input could be supplied via `CommandRequest.Command.Stdin`
-                            // If all input planned to supplied this way, `StartCommand.Stdin` should be set as empty byte string
-  optional string Role = 6; // Role is actually a user name or security token
+// Request to query system uptime
+message UptimeRequest {}
+
+// Structured response for system uptime
+message UptimeResponse {
+    double uptime_seconds = 1;
+    double idle_seconds = 2;
+    string formatted = 3;
 }
 
-message CommandIO {
-    bytes Payload = 1;
+// Allowed OTA action types
+enum OtaAction {
+    OTA_ACTION_UNSPECIFIED = 0;
+    OTA_ACTION_GET = 1;
+    OTA_ACTION_CACHIX = 2;
 }
 
-message SignalCommand {
-    int32 Signal = 1;
+// Request to execute a dedicated OTA update operation
+message OtaUpdateRequest {
+    OtaAction action = 1;
+    optional string pin = 2;
+    optional string cache = 3;
+    optional string token = 4;
+    optional string cachix_host = 5;
 }
 
-message StartedEvent {
-    int32 Pid = 1;
+// Response for an OTA update operation
+message OtaUpdateResponse {
+    int32 return_code = 1;
+    string output = 2;
+    string error = 3;
 }
 
-message FinishedEvent {
-    int32 ReturnCode = 1;
-}
-
-message CommandRequest {
-    oneof Command {
-        StartCommand Start = 1;
-        CommandIO Stdin = 2;
-        SignalCommand Signal = 3;
-    }
-}
-
-message CommandRelayRequest {
-    string Agent = 1;
-    CommandRequest Command = 2;
-}
-
-message CommandResponse {
-    oneof Event {
-        CommandIO Stdout = 1;
-        CommandIO Stderr = 2;
-        StartedEvent Started = 3;
-        FinishedEvent Finished = 4;
-    }
-}
-
-// Define the service to execute and manage subprocess commands
+// Dedicated, strongly typed service replacing generic shell/command execution
 service Exec {
-  // Execute a command and wait for it to complete, provided relayed IO streams
-  rpc RunCommand(stream CommandRequest) returns (stream CommandResponse);
+    // Dedicated RPC for retrieving system uptime without process spawning
+    rpc GetUptime(UptimeRequest) returns (UptimeResponse);
+
+    // Dedicated RPC for executing typed OTA updates
+    rpc RunOtaUpdate(OtaUpdateRequest) returns (OtaUpdateResponse);
 }
